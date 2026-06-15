@@ -361,6 +361,8 @@ export const STAGES = [
   {
     name: "clawd",
     bellyRow: 1,
+    noBreath: true,
+    petOpen: true,
     frames: [
       [
         " ▐▛███▜▌",
@@ -409,39 +411,39 @@ export const STAGES = [
     frames: [
       [
         "   ▚      ▞",
-        "  ▗▟█████▙▖",
+        "  ▗▄██████▄",
         " ▐███ ██ ███▌",
         " ▐██████████▌",
         " ▝▜████████▛▘",
-        "   ▘▘   ▝▝",
+        "    ▘▘  ▝▝",
       ],
       [
         "   ▞      ▚",
-        "  ▗▟█████▙▖",
+        "  ▗▟██████▙",
         " ▐███ ██ ███▌",
         " ▐██████████▌",
         " ▝▜████████▛▘",
-        "   ▘▘   ▝▝",
+        "    ▘▘  ▝▝",
       ],
     ],
     blink: [
       "   ▚      ▞",
-      "  ▗▟█████▙▖",
+      "  ▗▄██████▄",
       " ▐███▄██▄███▌",
       " ▐██████████▌",
       " ▝▜████████▛▘",
-      "   ▘▘   ▝▝",
+      "    ▘▘  ▝▝",
     ],
   },
   {
     name: "はたらきもの",
-    bellyRow: 4,
+    bellyRow: 5,
     frames: [
       [
         "  ▟▙      ▟▙",
         "  ▗▟██████▙▖",
         " ▐███ ██ ███▌",
-        " ▐██████████▌▄▛",
+        " ▐██████████▙▄▛",
         " ▝▜████████▛▘",
         "   ▘▘    ▝▝",
       ],
@@ -449,7 +451,7 @@ export const STAGES = [
         "  ▟▙      ▟▙",
         "  ▗▟██████▙▖",
         " ▐███ ██ ███▌",
-        " ▐██████████▌▄▄",
+        " ▐██████████▙▄▄",
         " ▝▜████████▛▘",
         "   ▘▘    ▝▝",
       ],
@@ -458,7 +460,7 @@ export const STAGES = [
       "  ▟▙      ▟▙",
       "  ▗▟██████▙▖",
       " ▐███▄██▄███▌",
-      " ▐██████████▌▄▛",
+      " ▐██████████▙▄▛",
       " ▝▜████████▛▘",
       "   ▘▘    ▝▝",
     ],
@@ -501,7 +503,7 @@ export const STAGES = [
   },
   {
     name: "でんせつのclawd",
-    bellyRow: 7,
+    bellyRow: 6,
     crownRows: 2,
     frames: [
       [
@@ -560,9 +562,11 @@ const QUAD_OF = Object.fromEntries([...QUAD_CHARS].map((c, i) => [c, i]));
 
 export function breathArt(stage) {
   const rows = stage.blink;
+  if (stage.noBreath) return rows.slice(); // 小さすぎるステージは呼吸で潰さない
   const out = rows.slice();
-  for (let r = 0; r < stage.bellyRow; r++) {
-    const above = r > 0 ? rows[r - 1] : "";
+  const top = stage.crownRows ?? 0; // 王冠は剛体。呼吸させず固定して金色を保つ
+  for (let r = top; r < stage.bellyRow; r++) {
+    const above = r > top ? rows[r - 1] : "";
     const cur = rows[r];
     const width = Math.max(above.length, cur.length);
     let line = "";
@@ -643,7 +647,12 @@ export function composeScreen(view) {
 export const TEXTS = {
   ja: {
     measuring: "計測中…",
-    widen: (c, r) => `  ウィンドウを ひろげてね（よこ${c} × たて${r} いじょう）`,
+    widen: (c, r, cc, rr) => {
+      const p = [];
+      if (c - cc > 0) p.push(`横 あと${c - cc}`);
+      if (r - rr > 0) p.push(`縦 あと${r - rr}`);
+      return `  ウィンドウを ひろげてね（${p.join(" / ")}）`;
+    },
     evolved: (name) => `${name}！`,
     firstSpeech: "きょうも がんばろ",
     stageNames: ["clawd", "ぷちclawd", "そだちざかり", "はたらきもの", "でかclawd", "でんせつのclawd"],
@@ -690,7 +699,12 @@ export const TEXTS = {
   },
   en: {
     measuring: "measuring…",
-    widen: (c, r) => `  please widen the window (min ${c} x ${r})`,
+    widen: (c, r, cc, rr) => {
+      const p = [];
+      if (c - cc > 0) p.push(`W +${c - cc}`);
+      if (r - rr > 0) p.push(`H +${r - rr}`);
+      return `  please widen the window (${p.join(" / ")})`;
+    },
     evolved: (name) => `${name}!`,
     firstSpeech: "let's code together",
     stageNames: ["clawd", "lil clawd", "growing up", "hard worker", "big clawd", "legendary clawd"],
@@ -751,7 +765,7 @@ export function maxContentWidth() {
   return max;
 }
 
-export const MIN_COLS = maxContentWidth() + 2;
+export const MIN_COLS = maxContentWidth();
 
 // 必要な高さ。最終形態（最大アート）を基準に固定する。
 // 一度この高さに窓を合わせれば、以後どのステージでもメッセージは出ない。
@@ -798,7 +812,7 @@ export function previewSpec(stageIndex, state, now) {
     zzzPhase = Math.floor(now / 900) % 3;
     sleepBody = true;
   } else if (state === "pet") {
-    art = stage.blink;
+    art = stage.petOpen ? stage.frames[0] : stage.blink;
     heartPhase = Math.floor(now / 300) % 3;
   } else if (state === "ripple") {
     art = stage.frames[idleFrame];
@@ -1102,9 +1116,10 @@ function runLoop(opts = {}) {
     if (now >= nextBlinkAt) { blinkUntil = now + 400; nextBlinkAt = now + 4000 + Math.random() * 6000; }
     // 寝姿: 目を閉じて、2秒周期でお腹が縮む（呼吸）。撫でられ中も目を細めて嬉しそうに
     const exhale = asleep && Math.floor(now / 2000) % 2 === 1;
-    const art = (asleep || petted)
-      ? (exhale ? breathArt(stage) : stage.blink)
-      : (stage.blink && now < blinkUntil ? stage.blink : stage.frames[frameIdx % stage.frames.length]);
+    let art;
+    if (asleep) art = exhale ? breathArt(stage) : stage.blink;
+    else if (petted) art = stage.petOpen ? stage.frames[0] : stage.blink;
+    else art = stage.blink && now < blinkUntil ? stage.blink : stage.frames[frameIdx % stage.frames.length];
 
     if (now - lastSpeechAt >= SPEECH_INTERVAL_MS) {
       speech = pickSpeech({ stageIndex: s.index, pace: computePace(samples), hour: hourIn(now, cfg.timezone), total, asleep }, Math.random, cfg.language);
@@ -1127,7 +1142,7 @@ function runLoop(opts = {}) {
     });
     // 必要サイズは最終形態を基準に固定。一度合わせれば成長してもメッセージは出ない
     if (cols < MIN_COLS || rows < MIN_ROWS) {
-      out.write("\x1b[H\x1b[2J" + T.widen(MIN_COLS, MIN_ROWS) + "\n");
+      out.write("\x1b[H\x1b[2J" + T.widen(MIN_COLS, MIN_ROWS, cols, rows) + "\n");
       return;
     }
     paintCentered(out, lines, art, {
@@ -1202,7 +1217,7 @@ function interactivePreview(cfg) {
         : `${GRAY} <-/-> stage ^/v state q:quit${RESET}`,
     ];
     if (cols < MIN_COLS || rows < MIN_ROWS + footer.length) {
-      out.write("\x1b[H\x1b[2J" + T.widen(MIN_COLS, MIN_ROWS + footer.length) + "\n");
+      out.write("\x1b[H\x1b[2J" + T.widen(MIN_COLS, MIN_ROWS + footer.length, cols, rows) + "\n");
       return;
     }
     const lines = composeScreen({

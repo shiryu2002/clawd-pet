@@ -347,9 +347,9 @@ test("formatCountdown: mm:ss 形式、負値は 0:00", () => {
   assert.equal(formatCountdown(60_000), "1:00");
 });
 
-test("MIN_COLS: 実際に使う最大幅 + 2。コンテンツを足してこれが伸びたら意図的に確認する", () => {
+test("MIN_COLS: 実際に使う最大幅そのもの。コンテンツを足してこれが伸びたら意図的に確認する", () => {
   assert.equal(maxContentWidth(), 28);
-  assert.equal(MIN_COLS, 30);
+  assert.equal(MIN_COLS, 28);
   // どのセリフの吹き出しも MIN_COLS に収まる（はみ出す行を追加したらここで気づく）
   for (const pool of Object.values(SPEECH_POOLS)) {
     for (const t of pool) {
@@ -415,7 +415,7 @@ test("TEXTS: ja/en が同じ構造を持つ", () => {
     assert.equal(t.stageNames.length, STAGES.length);
     assert.equal(typeof t.measuring, "string");
     assert.equal(typeof t.evolved("x"), "string");
-    assert.equal(typeof t.widen(48, 17), "string");
+    assert.equal(typeof t.widen(48, 17, 40, 10), "string");
     for (const key of ["petted", "asleep", "legend", "night", "burning", "quiet", "generic"]) {
       assert.ok(t.pools[key].length >= 3, `${lang}.pools.${key}`);
     }
@@ -622,7 +622,8 @@ test("previewSpec: 状態ごとのアニメ指定", () => {
 
     const pet = previewSpec(i, "pet", now);
     assert.ok(pet.heartPhase !== null);
-    assert.deepEqual(pet.art, STAGES[i].blink); // 目を細める
+    // 撫で: 通常は目を細める(blink)、petOpen のステージは目を開けたまま(frames[0])
+    assert.deepEqual(pet.art, STAGES[i].petOpen ? STAGES[i].frames[0] : STAGES[i].blink);
 
     const ripple = previewSpec(i, "ripple", now);
     assert.equal(ripple.rippleActive, true);
@@ -631,4 +632,43 @@ test("previewSpec: 状態ごとのアニメ指定", () => {
 
 test("PREVIEW_STATES: idle/sleep/pet/ripple の4状態", () => {
   assert.deepEqual(PREVIEW_STATES, ["idle", "sleep", "pet", "ripple"]);
+});
+
+test("breathArt: noBreath のステージは blink のまま（潰さない）", () => {
+  const s1 = STAGES[0];
+  assert.equal(s1.noBreath, true);
+  assert.deepEqual(breathArt(s1), s1.blink);
+});
+
+test("breathArt: 王冠（crownRows）は呼吸させず固定する", () => {
+  const s6 = STAGES[5];
+  const breath = breathArt(s6);
+  for (let r = 0; r < s6.crownRows; r++) {
+    assert.equal(breath[r], s6.blink[r], `crown row ${r} が動いた`);
+  }
+  // 尻尾の行（最下部の本体）は途切れず残る
+  assert.equal(breath[breath.length - 1], s6.blink[s6.blink.length - 1]);
+});
+
+test("Stage1: petOpen=true（撫で時は目を開ける）, Stage6: crownRows=2/bellyRow=6", () => {
+  assert.equal(STAGES[0].petOpen, true);
+  assert.equal(STAGES[5].crownRows, 2);
+  assert.equal(STAGES[5].bellyRow, 6);
+});
+
+test("TEXTS.widen: 足りない軸ぶんだけ差分を出す", () => {
+  const w = TEXTS.ja.widen;
+  // 横だけ不足（必要28x22, 現在20x24）
+  let m = w(28, 22, 20, 24);
+  assert.ok(m.includes("横 あと8"), m);
+  assert.ok(!m.includes("縦"), m);
+  // 縦だけ不足
+  m = w(28, 22, 30, 18);
+  assert.ok(m.includes("縦 あと4"), m);
+  assert.ok(!m.includes("横"), m);
+  // 両方不足
+  m = w(28, 22, 25, 20);
+  assert.ok(m.includes("横 あと3") && m.includes("縦 あと2"), m);
+  // en も同様に差分
+  assert.ok(TEXTS.en.widen(28, 22, 25, 20).includes("W +3"));
 });
