@@ -1,0 +1,30 @@
+{
+  "name": "clawd-pet",
+  "version": "0.1.0",
+  "description": "Claude Code の日次トークン消費で育つターミナルペット / A terminal pet that grows with your daily Claude Code token usage",
+  "type": "module",
+  "bin": {
+    "clawd-pet": "./clawd-pet.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "start": "node clawd-pet.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "clawd-pet.mjs",
+    "clawd-pet.sh",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "claude-code",
+    "terminal",
+    "pet",
+    "tamagotchi",
+    "tokens",
+    "cli"
+  ]
+}
