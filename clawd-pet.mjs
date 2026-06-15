@@ -778,19 +778,36 @@ export function fitLines(lines, rows) {
   return out.length + 1 <= rows ? out : null;
 }
 
-function preview() {
-  for (let i = 0; i < STAGES.length; i++) {
-    const st = STAGES[i];
-    console.log(`\n=== Stage ${i + 1}: ${st.name}（しきい値 ${THRESHOLDS[i].toLocaleString("en-US")}） ===`);
-    st.frames.forEach((frame, j) => {
-      console.log(`--- frame ${j} ---`);
-      console.log(frame.join("\n"));
-    });
-    if (st.blink) {
-      console.log("--- blink ---");
-      console.log(st.blink.join("\n"));
-    }
+// 対話式プレビューの状態（↑↓で切り替え）
+export const PREVIEW_STATES = ["idle", "sleep", "pet", "ripple"];
+
+// プレビューの1フレーム分のアニメ状態を決める純粋関数。
+// ステージ・状態・時刻から、表示するアートと各オーバーレイのフェーズを返す
+export function previewSpec(stageIndex, state, now) {
+  const stage = STAGES[stageIndex];
+  const floor = THRESHOLDS[stageIndex];
+  const ceil = stageIndex + 1 < THRESHOLDS.length ? THRESHOLDS[stageIndex + 1] : null;
+  // そのステージらしさが出る代表トークン量（ゲージが途中まで埋まる値）
+  const total = ceil === null ? Math.round(floor * 1.3) : Math.round(floor + (ceil - floor) * 0.4);
+  const idleFrame = Math.floor(now / 700) % 2;
+  const blinkOn = now % 4000 < 200;
+  let art = stage.frames[idleFrame];
+  let zzzPhase = null, heartPhase = null, rippleActive = false, sleepBody = false;
+  if (state === "sleep") {
+    art = Math.floor(now / 2000) % 2 === 1 ? breathArt(stage) : stage.blink;
+    zzzPhase = Math.floor(now / 900) % 3;
+    sleepBody = true;
+  } else if (state === "pet") {
+    art = stage.blink;
+    heartPhase = Math.floor(now / 300) % 3;
+  } else if (state === "ripple") {
+    art = stage.frames[idleFrame];
+    rippleActive = true;
+  } else {
+    art = blinkOn && stage.blink ? stage.blink : stage.frames[idleFrame];
   }
+  const s = stageFor(total);
+  return { art, zzzPhase, heartPhase, rippleActive, sleepBody, total, progress: s.progress, ceil: s.ceil, floor: s.floor };
 }
 
 // 進化エフェクト: 本家 ultracode 選択時の波紋（UltraRippleText）の再現
@@ -941,6 +958,55 @@ function once(cfg = resolveConfig(process.env, loadConfigFile())) {
   console.log(`today=${total} cost=$${c.todayCost().toFixed(2)} stage=${s.index + 1} progress=${(s.progress * 100).toFixed(1)}%`);
 }
 
+// 合成済みブロックを端末の縦横中央に色付き描画する（runLoop と --preview で共用）。
+// footer があれば最下部に固定。ripple を渡すと波紋エフェクトで描く
+function paintCentered(out, lines, art, opts) {
+  const { cols, rows, palette, crownRows = 0, ripple = null, body, footer = [] } = opts;
+  // 詰めるのは成長余白（アートが低いぶんの上部空行）だけ。吹き出し領域の3行は保つ
+  const maxTrim = ART_H - art.length;
+  let lead = 0;
+  while (lead < maxTrim && lines[lead] === "") lead++;
+  const fitted = lines.slice(lead);
+  const trimmed = lead;
+
+  let L = Infinity, R = 0;
+  for (const l of fitted) {
+    if (l === "") continue;
+    L = Math.min(L, l.length - l.trimStart().length);
+    R = Math.max(R, strWidth(l));
+  }
+  if (!Number.isFinite(L)) L = 0;
+  const leftPad = Math.max(0, Math.floor((cols - L - R) / 2));
+  const topPad = Math.max(0, Math.floor((rows - 1 - footer.length - fitted.length) / 2));
+
+  let rendered;
+  if (ripple) {
+    const origin = {
+      col: AXIS_COL,
+      row: BUBBLE_H + (ART_H - art.length) + Math.floor(art.length / 2) - trimmed,
+    };
+    const travel = (ripple.now - ripple.start) * RIPPLE_SPEED;
+    const top = topLineColors(art.length, crownRows, palette);
+    const baseColors = fitted.map((_, i) => (i + trimmed < top.length ? top[i + trimmed] : ""));
+    rendered = applyRipple(fitted, origin, travel, baseColors, R);
+  } else {
+    const top = topLineColors(art.length, crownRows, { ...palette, body });
+    rendered = fitted.map((line, i) => (i + trimmed < top.length ? top[i + trimmed] + line + RESET : line));
+  }
+
+  const pad = " ".repeat(leftPad);
+  let buf = "\x1b[H";
+  for (let i = 0; i < topPad; i++) buf += "\x1b[K\n";
+  for (const line of rendered) buf += pad + line + "\x1b[K\n";
+  if (footer.length) {
+    const blanks = Math.max(0, rows - 1 - topPad - rendered.length - footer.length);
+    for (let i = 0; i < blanks; i++) buf += "\x1b[K\n";
+    for (const f of footer) buf += f + "\x1b[K\n";
+  }
+  buf += "\x1b[J";
+  out.write(buf);
+}
+
 function runLoop(opts = {}) {
   const cfg = opts.cfg ?? resolveConfig(process.env, loadConfigFile());
   const T = TEXTS[cfg.language];
@@ -1064,47 +1130,11 @@ function runLoop(opts = {}) {
       out.write("\x1b[H\x1b[2J" + T.widen(MIN_COLS, MIN_ROWS) + "\n");
       return;
     }
-    // 詰めるのは成長余白（アートが低いぶんの上部空行）だけ。吹き出し領域の3行は
-    // 保つ（ハートや Zzz は上端が空でも、その空きを詰めると縦位置がずれてしまう）
-    const maxTrim = ART_H - art.length;
-    let lead = 0;
-    while (lead < maxTrim && lines[lead] === "") lead++;
-    const fitted = lines.slice(lead);
-    const trimmed = lead;
-
-    // 横方向の中央寄せ: コンテンツの左端 L〜右端 R を端末幅の中央へ
-    let L = Infinity, R = 0;
-    for (const l of fitted) {
-      if (l === "") continue;
-      L = Math.min(L, l.length - l.trimStart().length);
-      R = Math.max(R, strWidth(l));
-    }
-    if (!Number.isFinite(L)) L = 0;
-    const leftPad = Math.max(0, Math.floor((cols - L - R) / 2));
-    const topPad = Math.max(0, Math.floor((rows - 1 - fitted.length) / 2));
-
-    let rendered;
-    if (rippleActive) {
-      // 波紋の原点はペットの中心
-      const origin = {
-        col: AXIS_COL,
-        row: BUBBLE_H + (ART_H - art.length) + Math.floor(art.length / 2) - trimmed,
-      };
-      const travel = (now - rippleStart) * RIPPLE_SPEED;
-      const top = topLineColors(art.length, stage.crownRows ?? 0, palette);
-      const baseColors = fitted.map((_, i) => (i + trimmed < top.length ? top[i + trimmed] : ""));
-      rendered = applyRipple(fitted, origin, travel, baseColors, R);
-    } else {
-      const body = asleep ? palette.sleepBody : palette.body;
-      const top = topLineColors(art.length, stage.crownRows ?? 0, { ...palette, body });
-      rendered = fitted.map((line, i) => (i + trimmed < top.length ? top[i + trimmed] + line + RESET : line));
-    }
-    const pad = " ".repeat(leftPad);
-    let buf = "\x1b[H";
-    for (let i = 0; i < topPad; i++) buf += "\x1b[K\n";
-    for (const line of rendered) buf += pad + line + "\x1b[K\n";
-    buf += "\x1b[J";
-    out.write(buf);
+    paintCentered(out, lines, art, {
+      cols, rows, palette, crownRows: stage.crownRows ?? 0,
+      ripple: rippleActive ? { start: rippleStart, now } : null,
+      body: asleep ? palette.sleepBody : palette.body,
+    });
 
     // 波紋中は 50ms 間隔の追加フレームで滑らかに描く
     if (rippleActive && !rippleTimer) {
@@ -1123,18 +1153,108 @@ function runLoop(opts = {}) {
   setInterval(renderTick, RENDER_INTERVAL_MS);
 }
 
+// 対話式プレビュー: 矢印でステージ(←→)と状態(↑↓)を切り替えて、本番と同じ色・
+// 中央配置・アニメで確認する。idle/sleep/pet/ripple を含む
+function interactivePreview(cfg) {
+  const T = TEXTS[cfg.language];
+  const palette = detectPalette();
+  const out = process.stdout;
+  const stdin = process.stdin;
+  const GRAY = "\x1b[90m";
+  let stage = 0;
+  let st = 0;
+  let rippleStart = Date.now();
+  let speech = "";
+
+  const refreshSpeech = () => {
+    const state = PREVIEW_STATES[st];
+    speech = state === "ripple"
+      ? T.evolved(T.stageNames[stage])
+      : pickSpeech({ stageIndex: stage, petted: state === "pet", asleep: state === "sleep", pace: 4_200_000, hour: 12, total: THRESHOLDS[stage] + 1 }, Math.random, cfg.language);
+  };
+  refreshSpeech();
+
+  out.write("\x1b[?1049h\x1b[?25l");
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    out.write("\x1b[?25h\x1b[?1049l");
+    if (stdin.isTTY && stdin.setRawMode) { try { stdin.setRawMode(false); } catch { /* noop */ } }
+  };
+  const quit = () => { cleanup(); process.exit(0); };
+  process.on("SIGINT", quit);
+  process.on("SIGTERM", quit);
+  process.on("exit", cleanup);
+
+  const render = () => {
+    const now = Date.now();
+    const state = PREVIEW_STATES[st];
+    const stageObj = STAGES[stage];
+    if (state === "ripple" && now - rippleStart >= RIPPLE_DURATION_MS) rippleStart = now; // ループ再生
+    const spec = previewSpec(stage, state, now);
+    const cols = out.columns || 80;
+    const rows = out.rows || 24;
+    const footer = [
+      `${GRAY} Stage ${stage + 1}/${STAGES.length} · ${state}${RESET}`,
+      cfg.language === "ja"
+        ? `${GRAY} <-/->ステージ ^/v状態 q:終了${RESET}`
+        : `${GRAY} <-/-> stage ^/v state q:quit${RESET}`,
+    ];
+    if (cols < MIN_COLS || rows < MIN_ROWS + footer.length) {
+      out.write("\x1b[H\x1b[2J" + T.widen(MIN_COLS, MIN_ROWS + footer.length) + "\n");
+      return;
+    }
+    const lines = composeScreen({
+      artLines: spec.art, bubbleText: speech, stageIndex: stage, stageName: T.stageNames[stage],
+      total: spec.total, progress: spec.progress, ceil: spec.ceil, floor: spec.floor,
+      pace: 4_200_000, cost: spec.total / 1e6 * 1.9, nextScanInMs: 120_000, lang: cfg.language,
+      zzzPhase: spec.zzzPhase, heartPhase: spec.heartPhase,
+    });
+    paintCentered(out, lines, spec.art, {
+      cols, rows, palette, crownRows: stageObj.crownRows ?? 0,
+      ripple: spec.rippleActive ? { start: rippleStart, now } : null,
+      body: spec.sleepBody ? palette.sleepBody : palette.body,
+      footer,
+    });
+  };
+
+  if (stdin.isTTY && stdin.setRawMode) {
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding("utf8");
+    stdin.on("data", (d) => {
+      if (d.includes("\x03") || d.includes("q")) return quit();
+      const seqs = d.match(/\x1b\[[ABCD]/g) || []; // まとめ押しも1つずつ処理
+      let changed = false;
+      for (const sq of seqs) {
+        if (sq === "\x1b[C") stage = (stage + 1) % STAGES.length;
+        else if (sq === "\x1b[D") stage = (stage - 1 + STAGES.length) % STAGES.length;
+        else if (sq === "\x1b[A") st = (st - 1 + PREVIEW_STATES.length) % PREVIEW_STATES.length;
+        else if (sq === "\x1b[B") st = (st + 1) % PREVIEW_STATES.length;
+        changed = true;
+      }
+      if (changed) {
+        if (PREVIEW_STATES[st] === "ripple") rippleStart = Date.now();
+        refreshSpeech();
+        render();
+      }
+    });
+  }
+
+  render();
+  setInterval(render, 80);
+}
+
 const HELP_TEXTS = {
   ja: `clawd-pet — Claude Code の日次トークン消費で育つターミナルペット
 
 Usage: clawd-pet [flag]
 
 Flags:
-  (なし)      ペットを起動する。終了は Ctrl+C
+  (なし)      ペットを起動する。終了は Ctrl+C または q
   --once      今日の集計を1行出力して終了
-  --preview   全ステージのアートを一覧表示
-  --ripple    起動直後に進化エフェクトを試し見
-  --sleep     寝姿を試し見
-  --pet       撫でられ状態を試し見
+  --preview   対話式プレビュー（←→でステージ, ↑↓で状態）
   --help      このヘルプ
 
 ホイールを回すと撫でられて喜ぶ。終了は Ctrl+C または q
@@ -1147,12 +1267,9 @@ Flags:
 Usage: clawd-pet [flag]
 
 Flags:
-  (none)      run the pet (Ctrl+C to quit)
+  (none)      run the pet (Ctrl+C or q to quit)
   --once      print today's stats once and exit
-  --preview   show all stage art
-  --ripple    demo the evolution ripple on launch
-  --sleep     demo the sleeping pose
-  --pet       demo the petted reaction
+  --preview   interactive preview (<-/-> stage, ^/v state)
   --help      this help
 
 Scroll the wheel to pet clawd. Quit with Ctrl+C or q
@@ -1162,7 +1279,7 @@ Config: ~/.config/clawd-pet/config.json (env vars take precedence)
   CLAWD_PET_INTERVAL_SEC / CLAWD_PET_CONFIG_DIR / CLAWD_PET_NO_FETCH`,
 };
 
-const KNOWN_FLAGS = new Set(["--once", "--preview", "--ripple", "--sleep", "--pet", "--help"]);
+const KNOWN_FLAGS = new Set(["--once", "--preview", "--help"]);
 
 async function main() {
   const args = process.argv.slice(2);
@@ -1172,7 +1289,8 @@ async function main() {
     console.log(HELP_TEXTS[lang]);
     process.exit(unknown.length > 0 && !args.includes("--help") ? 1 : 0);
   }
-  if (args.includes("--preview")) return preview();
+  // プレビューは設定ファイルだけ見る（ウィザードや料金取得は不要）
+  if (args.includes("--preview")) return interactivePreview(resolveConfig(process.env, loadConfigFile()));
   let file = loadConfigFile();
   if (!file && process.stdin.isTTY && process.stdout.isTTY && !args.includes("--once")) {
     file = await firstRunWizard();
@@ -1181,8 +1299,7 @@ async function main() {
   // 起動時に料金表を更新（失敗時はキャッシュ → 内蔵テーブル）
   await refreshPricing({ cacheFile: path.join(configDir(), "pricing-cache.json") });
   if (args.includes("--once")) return once(cfg);
-  // --ripple: 波紋 / --sleep: 寝姿 / --pet: 撫でられ を試し見
-  runLoop({ demoRipple: args.includes("--ripple"), demoSleep: args.includes("--sleep"), demoPet: args.includes("--pet"), cfg });
+  runLoop({ cfg });
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;

@@ -17,6 +17,7 @@ import {
   maxContentWidth, MIN_COLS, MIN_ROWS, maxContentHeight, SPEECH_POOLS, fitLines, zzzLines, breathArt,
   dayKey, midnightMs, resolveConfig, mergeLiteLLMPricing, TEXTS,
   parseMouseEvents, heartLines, PET_DURATION_MS,
+  previewSpec, PREVIEW_STATES,
 } from "../clawd-pet.mjs";
 
 test("scaffold: 定数が読める", () => {
@@ -525,7 +526,7 @@ test("--help: 使い方を表示して正常終了、未知のフラグはヘル
   const mjs = new URL("../clawd-pet.mjs", import.meta.url).pathname;
   const env = { ...process.env, CLAWD_PET_NO_FETCH: "1" };
   const help = execFileSync("node", [mjs, "--help"], { env, encoding: "utf8" });
-  for (const word of ["Usage", "--once", "--preview", "--ripple", "--sleep", "--help"]) {
+  for (const word of ["Usage", "--once", "--preview", "--help"]) {
     assert.ok(help.includes(word), `ヘルプに ${word} がない`);
   }
   // 未知フラグ → ヘルプを出して exit 1
@@ -603,4 +604,31 @@ test("composeScreen: heartPhase 指定中は吹き出し枠が消えてハート
 
 test("PET_DURATION_MS: 撫でられ状態の継続時間", () => {
   assert.ok(PET_DURATION_MS >= 1000);
+});
+
+test("previewSpec: 状態ごとのアニメ指定", () => {
+  const now = 1000;
+  for (let i = 0; i < STAGES.length; i++) {
+    const idle = previewSpec(i, "idle", now);
+    assert.equal(idle.zzzPhase, null);
+    assert.equal(idle.heartPhase, null);
+    assert.equal(idle.rippleActive, false);
+    // 代表トークン量はそのステージの範囲内
+    assert.ok(idle.total >= THRESHOLDS[i]);
+    if (i + 1 < THRESHOLDS.length) assert.ok(idle.total < THRESHOLDS[i + 1]);
+
+    const sleep = previewSpec(i, "sleep", now);
+    assert.ok(sleep.zzzPhase !== null && sleep.sleepBody === true);
+
+    const pet = previewSpec(i, "pet", now);
+    assert.ok(pet.heartPhase !== null);
+    assert.deepEqual(pet.art, STAGES[i].blink); // 目を細める
+
+    const ripple = previewSpec(i, "ripple", now);
+    assert.equal(ripple.rippleActive, true);
+  }
+});
+
+test("PREVIEW_STATES: idle/sleep/pet/ripple の4状態", () => {
+  assert.deepEqual(PREVIEW_STATES, ["idle", "sleep", "pet", "ripple"]);
 });
