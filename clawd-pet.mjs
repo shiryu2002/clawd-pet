@@ -3,8 +3,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import readline from "node:readline/promises";
+import { spawn } from "node:child_process";
 
 export const JST_OFFSET_MS = 9 * 3600e3;
 export const THRESHOLDS = [0, 2_000_000, 10_000_000, 30_000_000, 80_000_000, 200_000_000];
@@ -1270,6 +1271,7 @@ Flags:
   (なし)      ペットを起動する。終了は Ctrl+C または q
   --once      今日の集計を1行出力して終了
   --preview   対話式プレビュー（←→でステージ, ↑↓で状態）
+  --edit      Web ドット絵エディタをブラウザで起動
   --help      このヘルプ
 
 ホイールを回すと撫でられて喜ぶ。終了は Ctrl+C または q
@@ -1285,6 +1287,7 @@ Flags:
   (none)      run the pet (Ctrl+C or q to quit)
   --once      print today's stats once and exit
   --preview   interactive preview (<-/-> stage, ^/v state)
+  --edit      open the web pixel-art editor in a browser
   --help      this help
 
 Scroll the wheel to pet clawd. Quit with Ctrl+C or q
@@ -1294,7 +1297,36 @@ Config: ~/.config/clawd-pet/config.json (env vars take precedence)
   CLAWD_PET_INTERVAL_SEC / CLAWD_PET_CONFIG_DIR / CLAWD_PET_NO_FETCH`,
 };
 
-const KNOWN_FLAGS = new Set(["--once", "--preview", "--help"]);
+// URL を開くOSコマンド（WSL は explorer.exe で Windows 既定ブラウザへ）
+export function browserCommand(platform, isWsl, url) {
+  if (isWsl) return { cmd: "explorer.exe", args: [url] };
+  if (platform === "darwin") return { cmd: "open", args: [url] };
+  if (platform === "win32") return { cmd: "cmd", args: ["/c", "start", "", url] };
+  return { cmd: "xdg-open", args: [url] };
+}
+
+function openBrowser(url) {
+  const isWsl = /microsoft/i.test(os.release());
+  const { cmd, args } = browserCommand(process.platform, isWsl, url);
+  try {
+    spawn(cmd, args, { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+  } catch { /* 開けなくても URL は表示するので問題ない */ }
+}
+
+// --edit: 同梱の Web ドット絵エディタを起動してブラウザで開く
+async function launchEditor() {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const serverPath = path.join(here, "clawd-web-editor", "server.mjs");
+  if (!fs.existsSync(serverPath)) {
+    console.log(`clawd-web-editor が見つからないわ: ${serverPath}`);
+    process.exit(1);
+  }
+  const url = `http://${process.env.HOST || "127.0.0.1"}:${process.env.PORT || 4173}`;
+  await import(pathToFileURL(serverPath).href); // 読み込むと listen まで走る
+  openBrowser(url);
+}
+
+const KNOWN_FLAGS = new Set(["--once", "--preview", "--edit", "--help"]);
 
 async function main() {
   const args = process.argv.slice(2);
@@ -1306,6 +1338,7 @@ async function main() {
   }
   // プレビューは設定ファイルだけ見る（ウィザードや料金取得は不要）
   if (args.includes("--preview")) return interactivePreview(resolveConfig(process.env, loadConfigFile()));
+  if (args.includes("--edit")) return launchEditor();
   let file = loadConfigFile();
   if (!file && process.stdin.isTTY && process.stdout.isTTY && !args.includes("--once")) {
     file = await firstRunWizard();

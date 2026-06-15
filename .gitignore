@@ -1,3 +1,7 @@
 node_modules/
 *.log
 .DS_Store
+
+# ドット絵エディタの保存物と適用前バックアップ
+clawd-web-editor/designs/
+clawd-pet.mjs.bak-*

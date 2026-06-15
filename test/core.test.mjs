@@ -17,7 +17,7 @@ import {
   maxContentWidth, MIN_COLS, MIN_ROWS, maxContentHeight, SPEECH_POOLS, fitLines, zzzLines, breathArt,
   dayKey, midnightMs, resolveConfig, mergeLiteLLMPricing, TEXTS,
   parseMouseEvents, heartLines, PET_DURATION_MS,
-  previewSpec, PREVIEW_STATES,
+  previewSpec, PREVIEW_STATES, browserCommand,
 } from "../clawd-pet.mjs";
 
 test("scaffold: 定数が読める", () => {
@@ -671,4 +671,25 @@ test("TEXTS.widen: 足りない軸ぶんだけ差分を出す", () => {
   assert.ok(m.includes("横 あと3") && m.includes("縦 あと2"), m);
   // en も同様に差分
   assert.ok(TEXTS.en.widen(28, 22, 25, 20).includes("W +3"));
+});
+
+test("browserCommand: プラットフォーム別の起動コマンド", () => {
+  assert.deepEqual(browserCommand("linux", true, "http://x"), { cmd: "explorer.exe", args: ["http://x"] });
+  assert.deepEqual(browserCommand("darwin", false, "http://x"), { cmd: "open", args: ["http://x"] });
+  assert.deepEqual(browserCommand("win32", false, "http://x"), { cmd: "cmd", args: ["/c", "start", "", "http://x"] });
+  assert.deepEqual(browserCommand("linux", false, "http://x"), { cmd: "xdg-open", args: ["http://x"] });
+});
+
+test("--edit: エディタが見つからなければ案内して exit 1", () => {
+  const mjs = new URL("../clawd-pet.mjs", import.meta.url).pathname;
+  // CLAWD_PET_FILE 等は使わず、存在しない場所を指すため一時ディレクトリにコピーして実行
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-noedit-"));
+  fs.copyFileSync(mjs, path.join(tmp, "clawd-pet.mjs"));
+  let code = 0, out = "";
+  try {
+    execFileSync("node", [path.join(tmp, "clawd-pet.mjs"), "--edit"], { encoding: "utf8", env: { ...process.env, CLAWD_PET_NO_FETCH: "1" } });
+  } catch (e) { code = e.status; out = String(e.stdout); }
+  assert.equal(code, 1);
+  assert.ok(out.includes("clawd-web-editor"));
+  fs.rmSync(tmp, { recursive: true, force: true });
 });

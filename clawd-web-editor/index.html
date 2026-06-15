@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Clawd ドット絵エディタ</title>
+<style>
+  :root {
+    --bg: #14161c; --panel: #1c1f28; --panel2: #232733; --line: #2e3340;
+    --fg: #e6e8ee; --muted: #8b92a3; --accent: #ffb454; --accent2: #6ad0ff;
+    --on: #ffb454; --danger: #ff6b6b; --ok: #7ee787;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: ui-sans-serif, system-ui, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+    font-size: 14px;
+  }
+  header {
+    padding: 10px 16px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .hint { color: var(--muted); font-size: 12px; }
+  .layout { display: flex; gap: 16px; padding: 16px; align-items: flex-start; flex-wrap: wrap; }
+  .col { display: flex; flex-direction: column; gap: 12px; }
+  .col.editor { flex: 1 1 560px; min-width: 420px; }
+  .col.side { flex: 0 0 340px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+  .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tab, .pbtn, button.btn {
+    background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 12px; cursor: pointer; font-size: 13px;
+  }
+  .tab.active, .pbtn.active { border-color: var(--accent); color: var(--accent); }
+  .tab:hover, .pbtn:hover, button.btn:hover { border-color: var(--accent2); }
+  .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .toolbar .sep { width: 1px; height: 22px; background: var(--line); margin: 0 2px; }
+  .toolbar label { color: var(--muted); font-size: 12px; }
+  .toolbar input[type=number] { width: 56px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+  .canvas-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: #0d0f14; max-height: 60vh; }
+  canvas { display: block; image-rendering: pixelated; cursor: crosshair; }
+  .preview { background: #0d0f14; border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+  .preview pre { margin: 0; font-family: "DejaVu Sans Mono", "Cascadia Mono", Menlo, Consolas, monospace; font-size: 16px; line-height: 1.0; color: var(--accent); white-space: pre; min-height: 6em; display: flex; align-items: center; justify-content: center; }
+  .meta-grid { display: grid; grid-template-columns: auto 1fr; gap: 8px 10px; align-items: center; }
+  .meta-grid input[type=text], .meta-grid input[type=number] { background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; width: 100%; }
+  .meta-grid .checks { display: flex; gap: 14px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row.spread { justify-content: space-between; }
+  button.primary { background: var(--accent); color: #1a1208; border: none; font-weight: 600; }
+  button.apply { background: var(--ok); color: #062a10; border: none; font-weight: 600; }
+  button.primary, button.apply { border-radius: 8px; padding: 8px 14px; cursor: pointer; font-size: 13px; }
+  .gallery { display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow: auto; }
+  .gitem { border: 1px solid var(--line); border-radius: 8px; padding: 8px; display: flex; gap: 10px; align-items: center; }
+  .gitem pre { margin: 0; font-family: monospace; font-size: 6px; line-height: 1; color: var(--accent); flex: 0 0 86px; overflow: hidden; height: 48px; }
+  .gitem .meta { flex: 1; min-width: 0; }
+  .gitem .meta .n { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gitem .meta .d { color: var(--muted); font-size: 11px; }
+  .gitem .acts { display: flex; flex-direction: column; gap: 4px; }
+  .gitem .acts button { font-size: 11px; padding: 3px 8px; }
+  .mini { font-size: 11px; padding: 3px 8px; }
+  #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--accent); color: var(--fg); padding: 10px 18px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  #toast.show { opacity: 1; }
+  .legend { color: var(--muted); font-size: 11px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🐾 Clawd ドット絵エディタ</h1>
+  <span id="conn" class="hint"></span>
+</header>
+
+<div class="layout">
+  <!-- 編集側 -->
+  <div class="col editor">
+    <div class="card">
+      <h2>成長ステージ</h2>
+      <div class="tabs" id="stageTabs"></div>
+    </div>
+
+    <div class="card">
+      <h2>パーツ（フレーム / まばたき）</h2>
+      <div class="tabs" id="partTabs"></div>
+    </div>
+
+    <div class="card">
+      <div class="toolbar">
+        <button class="pbtn active" id="toolPen" data-tool="pen">✏️ ペン</button>
+        <button class="pbtn" id="toolEraser" data-tool="eraser">🧽 消しゴム</button>
+        <span class="sep"></span>
+        <button class="btn" id="btnClear">全消去</button>
+        <button class="btn" id="btnFlip">左右反転</button>
+        <button class="btn" id="btnCopyFrom">他パーツから複製…</button>
+        <span class="sep"></span>
+        <label>列<input type="number" id="cols" min="1" max="40" /></label>
+        <label>行<input type="number" id="rows" min="1" max="20" /></label>
+        <span class="sep"></span>
+        <label>拡大<input type="number" id="zoom" min="6" max="40" step="2" /></label>
+      </div>
+      <div class="legend">1 マス = サブピクセル。2×2 がブロック文字 1 つ（<code>▘▝▖▗▌▐▀▄█…</code>）に対応する。右ドラッグで消去。</div>
+      <div class="canvas-wrap" id="canvasWrap" style="margin-top:10px;">
+        <canvas id="cv"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- サイド -->
+  <div class="col side">
+    <div class="card">
+      <h2>プレビュー（アニメ）</h2>
+      <div class="preview"><pre id="preview"></pre></div>
+    </div>
+
+    <div class="card">
+      <h2>このステージの設定</h2>
+      <div class="meta-grid">
+        <label title="このステージの呼び名（成長段階の名前）">名前</label><input type="text" id="mName" />
+        <label title="お腹の行番号（0 起点）。寝息アニメでは、この行より上の体だけが半行沈んで呼吸する">bellyRow</label><input type="number" id="mBelly" min="0" max="20" />
+        <label title="先頭の固定行数。王冠などアニメで動かしたくない部分の行数。空欄＝0（固定なし）">crownRows</label><input type="number" id="mCrown" min="0" max="6" placeholder="なし" />
+        <label>フラグ</label>
+        <div class="checks">
+          <label title="呼吸アニメをさせない。背の低い（行数の少ない）ステージ向け"><input type="checkbox" id="mNoBreath" /> noBreath</label>
+          <label title="撫でられても目を閉じず、開けたままにする"><input type="checkbox" id="mPetOpen" /> petOpen</label>
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button class="btn mini" id="btnDupStage">＋ このステージを複製</button>
+        <button class="btn mini" id="btnDelStage">このステージを削除</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>保存</h2>
+      <div class="row">
+        <input type="text" id="saveName" placeholder="デザイン名" style="flex:1; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 8px;" />
+        <button class="primary" id="btnSave">保存</button>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button class="btn mini" id="btnExport">JSON 書き出し</button>
+        <button class="btn mini" id="btnImport">JSON 読み込み</button>
+        <input type="file" id="fileInput" accept="application/json" style="display:none" />
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>コードに適用</h2>
+      <div class="row spread">
+        <span class="hint">現在の全ステージを clawd-pet.mjs に書き込む</span>
+        <button class="apply" id="btnApply">適用</button>
+      </div>
+      <div class="legend">適用前に自動でバックアップ（.bak-…）を作り、構文チェックに通った場合のみ書き込む。</div>
+    </div>
+
+    <div class="card">
+      <h2>保存済みデザイン</h2>
+      <div class="row" style="margin-bottom:8px;">
+        <button class="btn mini" id="btnReload">一覧を更新</button>
+      </div>
+      <div class="gallery" id="gallery"></div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script type="module">
+import {
+  QUAD_CHARS, encodeArt, artToPixels, gridSizeForArts, makePixels, flipPixelsH,
+} from "./codec.mjs";
+
+// ---- 状態 ----------------------------------------------------------------
+const app = {
+  stages: [],        // 編集モデル: { name, bellyRow, noBreath, petOpen, crownRows, cols, rows, parts: [pixels...], blinkIndex }
+  cur: 0,            // 選択ステージ
+  part: 0,           // 選択パーツ（0..frames-1 = フレーム, 最後 = blink）
+  tool: "pen",
+  zoom: 12,
+  hasServer: false,
+};
+
+const $ = (id) => document.getElementById(id);
+const cv = $("cv");
+const ctx = cv.getContext("2d");
+
+function toast(msg, color) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.style.borderColor = color || "var(--accent)";
+  t.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+// ステージ（API 形式 {name,bellyRow,frames,blink,...}）→ 編集モデル
+function toEditable(stage) {
+  const arts = [...stage.frames, stage.blink];
+  const { rows, cols } = gridSizeForArts(arts);
+  const parts = stage.frames.map((f) => artToPixels(f, rows, cols));
+  parts.push(artToPixels(stage.blink, rows, cols)); // 末尾が blink
+  return {
+    name: stage.name, bellyRow: stage.bellyRow ?? 0,
+    noBreath: !!stage.noBreath, petOpen: !!stage.petOpen,
+    crownRows: stage.crownRows ?? null,
+    cols, rows, parts, blinkIndex: parts.length - 1,
+  };
+}
+
+// 編集モデル → API/保存形式
+function toStage(s) {
+  const frames = [];
+  for (let i = 0; i < s.parts.length; i++) {
+    if (i === s.blinkIndex) continue;
+    frames.push(encodeArt(s.parts[i]));
+  }
+  const out = { name: s.name, bellyRow: s.bellyRow, frames, blink: encodeArt(s.parts[s.blinkIndex]) };
+  if (s.noBreath) out.noBreath = true;
+  if (s.petOpen) out.petOpen = true;
+  if (s.crownRows != null) out.crownRows = s.crownRows;
+  return out;
+}
+
+const curStage = () => app.stages[app.cur];
+const curPixels = () => curStage().parts[app.part];
+const partLabel = (s, i) => (i === s.blinkIndex ? "👁 まばたき" : `フレーム ${i + 1}`);
+
+// ---- 描画 ----------------------------------------------------------------
+// ターミナルのモノスペース文字は縦長（高さ≒幅×2）。1 文字=2×2 サブピクセルなので
+// サブピクセル 1 個は高さが幅の 2 倍になる。プレビューと同じ比率で見せるため縦に伸ばす。
+const CELL_ASPECT = 2;
+
+function drawCanvas() {
+  const px = curPixels();
+  const h = px.length, w = px[0].length;
+  const zx = app.zoom;
+  const zy = app.zoom * CELL_ASPECT;
+  cv.width = w * zx; cv.height = h * zy;
+  ctx.clearRect(0, 0, cv.width, cv.height);
+
+  // 背景・チェッカ
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      ctx.fillStyle = ((x + y) & 1) ? "#10131a" : "#0d0f14";
+      ctx.fillRect(x * zx, y * zy, zx, zy);
+      if (px[y][x]) {
+        ctx.fillStyle = "#ffb454";
+        ctx.fillRect(x * zx + 0.5, y * zy + 0.5, zx - 1, zy - 1);
+      }
+    }
+  }
+  // ブロック文字境界（2マスごと）を強調
+  ctx.strokeStyle = "rgba(110,208,255,0.18)";
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= w; x += 2) { ctx.beginPath(); ctx.moveTo(x * zx, 0); ctx.lineTo(x * zx, h * zy); ctx.stroke(); }
+  for (let y = 0; y <= h; y += 2) { ctx.beginPath(); ctx.moveTo(0, y * zy); ctx.lineTo(w * zx, y * zy); ctx.stroke(); }
+}
+
+function eventToCell(ev) {
+  const rect = cv.getBoundingClientRect();
+  // CSS 表示サイズと描画解像度がずれても拾えるようスケール補正する
+  const sx = cv.width / rect.width;
+  const sy = cv.height / rect.height;
+  const x = Math.floor((ev.clientX - rect.left) * sx / app.zoom);
+  const y = Math.floor((ev.clientY - rect.top) * sy / (app.zoom * CELL_ASPECT));
+  return { x, y };
+}
+
+let painting = false, paintValue = true, last = null;
+function paintAt(x, y, value) {
+  const px = curPixels();
+  if (y < 0 || x < 0 || y >= px.length || x >= px[0].length) return;
+  if (px[y][x] === value) return;
+  px[y][x] = value;
+}
+function paintLine(a, b, value) {
+  // a→b を線形補間して塗る（速いドラッグでも途切れない）
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const steps = Math.max(Math.abs(dx), Math.abs(dy), 1);
+  for (let i = 0; i <= steps; i++) {
+    paintAt(Math.round(a.x + (dx * i) / steps), Math.round(a.y + (dy * i) / steps), value);
+  }
+}
+
+cv.addEventListener("contextmenu", (e) => e.preventDefault());
+cv.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  cv.setPointerCapture(e.pointerId);
+  painting = true;
+  const erase = e.button === 2 || app.tool === "eraser";
+  paintValue = !erase;
+  const c = eventToCell(e);
+  paintAt(c.x, c.y, paintValue);
+  last = c;
+  drawCanvas();
+});
+cv.addEventListener("pointermove", (e) => {
+  if (!painting) return;
+  const c = eventToCell(e);
+  paintLine(last, c, paintValue);
+  last = c;
+  drawCanvas();
+});
+function endPaint() { if (painting) { painting = false; last = null; refreshPreview(); } }
+cv.addEventListener("pointerup", endPaint);
+cv.addEventListener("pointercancel", endPaint);
+
+// ---- UI 構築 -------------------------------------------------------------
+function renderStageTabs() {
+  const el = $("stageTabs"); el.innerHTML = "";
+  app.stages.forEach((s, i) => {
+    const b = document.createElement("button");
+    b.className = "tab" + (i === app.cur ? " active" : "");
+    b.textContent = `${i + 1}. ${s.name}`;
+    b.onclick = () => { app.cur = i; app.part = 0; renderAll(); };
+    el.appendChild(b);
+  });
+  const add = document.createElement("button");
+  add.className = "tab";
+  add.textContent = "＋ 新規";
+  add.title = "空のステージを末尾に追加する";
+  add.onclick = () => addStage("blank");
+  el.appendChild(add);
+}
+
+// ステージを末尾に追加する。mode="dup" は現在のステージを複製、それ以外は空のステージ。
+function addStage(mode) {
+  const cur = curStage();
+  let ns;
+  if (mode === "dup") {
+    ns = {
+      name: cur.name + " のコピー", bellyRow: cur.bellyRow,
+      noBreath: cur.noBreath, petOpen: cur.petOpen, crownRows: cur.crownRows,
+      cols: cur.cols, rows: cur.rows,
+      parts: cur.parts.map((p) => p.map((r) => [...r])),
+      blinkIndex: cur.blinkIndex,
+    };
+  } else {
+    const cols = cur.cols, rows = cur.rows;
+    const blank = () => makePixels(rows * 2, cols * 2);
+    ns = {
+      name: "新ステージ", bellyRow: rows, noBreath: false, petOpen: false, crownRows: null,
+      cols, rows, parts: [blank(), blank(), blank()], blinkIndex: 2,
+    };
+  }
+  app.stages.push(ns);
+  app.cur = app.stages.length - 1;
+  app.part = 0;
+  renderAll();
+  toast(mode === "dup" ? "複製してステージを追加した" : "空のステージを追加した");
+}
+
+// 現在のステージを削除する（最後の 1 つは残す）。
+function deleteStage() {
+  if (app.stages.length <= 1) { toast("最後の 1 ステージは削除できない", "var(--danger)"); return; }
+  const s = curStage();
+  if (!confirm(`ステージ「${s.name}」を削除する？`)) return;
+  app.stages.splice(app.cur, 1);
+  app.cur = Math.max(0, app.cur - 1);
+  app.part = 0;
+  renderAll();
+}
+function renderPartTabs() {
+  const el = $("partTabs"); el.innerHTML = "";
+  const s = curStage();
+  s.parts.forEach((_, i) => {
+    const b = document.createElement("button");
+    b.className = "pbtn" + (i === app.part ? " active" : "");
+    b.textContent = partLabel(s, i);
+    b.onclick = () => { app.part = i; renderAll(); };
+    el.appendChild(b);
+  });
+}
+function renderMeta() {
+  const s = curStage();
+  $("mName").value = s.name;
+  $("mBelly").value = s.bellyRow;
+  $("mCrown").value = s.crownRows ?? "";
+  $("mNoBreath").checked = s.noBreath;
+  $("mPetOpen").checked = s.petOpen;
+  $("cols").value = s.cols;
+  $("rows").value = s.rows;
+  $("zoom").value = app.zoom;
+}
+
+// ---- プレビュー（アニメ）-------------------------------------------------
+let previewTick = 0;
+function refreshPreview() { /* 次のタイマーで反映 */ }
+function previewLoop() {
+  const s = curStage();
+  const frameIdxs = s.parts.map((_, i) => i).filter((i) => i !== s.blinkIndex);
+  // 6 拍に 1 回まばたきを挟む
+  const phase = previewTick % (frameIdxs.length * 3 + 1);
+  let idx;
+  if (phase === frameIdxs.length * 3) idx = s.blinkIndex;
+  else idx = frameIdxs[Math.floor(phase / 3) % frameIdxs.length];
+  const art = encodeArt(s.parts[idx] ?? s.parts[0]);
+  $("preview").textContent = art.join("\n") || "（空）";
+  previewTick++;
+}
+setInterval(previewLoop, 450);
+
+// ---- リサイズ ------------------------------------------------------------
+function resizePixels(pixels, newH, newW) {
+  const out = makePixels(newH, newW);
+  for (let y = 0; y < Math.min(newH, pixels.length); y++)
+    for (let x = 0; x < Math.min(newW, pixels[0].length); x++)
+      out[y][x] = pixels[y][x];
+  return out;
+}
+function applyResize() {
+  const s = curStage();
+  const cols = Math.max(1, Math.min(40, +$("cols").value || s.cols));
+  const rows = Math.max(1, Math.min(20, +$("rows").value || s.rows));
+  s.cols = cols; s.rows = rows;
+  s.parts = s.parts.map((p) => resizePixels(p, rows * 2, cols * 2));
+  drawCanvas();
+}
+
+// ---- ギャラリー ----------------------------------------------------------
+async function loadGallery() {
+  if (!app.hasServer) { $("gallery").innerHTML = '<div class="hint">サーバー未接続。<code>node clawd-web-editor/server.mjs</code> で起動すると保存・適用が使える。</div>'; return; }
+  const r = await fetch("/api/designs");
+  const { designs } = await r.json();
+  const el = $("gallery"); el.innerHTML = "";
+  if (!designs.length) { el.innerHTML = '<div class="hint">まだ保存はない。</div>'; return; }
+  for (const d of designs) {
+    const item = document.createElement("div");
+    item.className = "gitem";
+    const pre = document.createElement("pre");
+    pre.textContent = d.stages.at(-1).blink.join("\n"); // 最終ステージのまばたき絵をサムネに
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.innerHTML = `<div class="n"></div><div class="d"></div>`;
+    meta.querySelector(".n").textContent = d.name;
+    meta.querySelector(".d").textContent = new Date(d.createdAt).toLocaleString() + ` ・ ${d.stages.length} ステージ`;
+    const acts = document.createElement("div");
+    acts.className = "acts";
+    const bLoad = document.createElement("button"); bLoad.className = "btn mini"; bLoad.textContent = "読込";
+    bLoad.onclick = () => { loadStages(d.stages); toast(`「${d.name}」を読み込んだ`); };
+    const bApply = document.createElement("button"); bApply.className = "btn mini"; bApply.textContent = "適用";
+    bApply.onclick = () => applyStages(d.stages, d.name);
+    const bDel = document.createElement("button"); bDel.className = "btn mini"; bDel.textContent = "削除";
+    bDel.onclick = async () => { if (confirm(`「${d.name}」を削除する？`)) { await fetch(`/api/designs/${d.id}`, { method: "DELETE" }); loadGallery(); } };
+    acts.append(bLoad, bApply, bDel);
+    item.append(pre, meta, acts);
+    el.appendChild(item);
+  }
+}
+
+// ---- 保存・適用・入出力 --------------------------------------------------
+function currentDesignStages() { return app.stages.map(toStage); }
+
+async function doSave() {
+  const name = $("saveName").value.trim() || "無題";
+  if (!app.hasServer) { toast("サーバー未接続。JSON 書き出しを使って", "var(--danger)"); return; }
+  const r = await fetch("/api/designs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, stages: currentDesignStages() }) });
+  const j = await r.json();
+  if (j.ok) { toast(`「${name}」を保存した`); loadGallery(); } else { toast("保存失敗: " + j.error, "var(--danger)"); }
+}
+
+async function applyStages(stages, label) {
+  if (!app.hasServer) { toast("サーバー未接続。適用にはサーバーが必要", "var(--danger)"); return; }
+  if (!confirm(`${label ? `「${label}」を` : "現在の内容を"} clawd-pet.mjs に適用する？\nバックアップを作ってから書き込む。`)) return;
+  const r = await fetch("/api/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ stages }) });
+  const j = await r.json();
+  if (j.ok) toast(`適用した（バックアップ: ${j.backup}）`, "var(--ok)");
+  else toast("適用失敗: " + j.error, "var(--danger)");
+}
+
+function doExport() {
+  const blob = new Blob([JSON.stringify({ name: $("saveName").value.trim() || "clawd-design", stages: currentDesignStages() }, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = ($("saveName").value.trim() || "clawd-design") + ".json";
+  a.click();
+}
+function doImport(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try { const j = JSON.parse(reader.result); loadStages(j.stages); if (j.name) $("saveName").value = j.name; toast("読み込んだ"); }
+    catch (e) { toast("読み込み失敗: " + e.message, "var(--danger)"); }
+  };
+  reader.readAsText(file);
+}
+
+// ---- 初期化 --------------------------------------------------------------
+function loadStages(stages) {
+  app.stages = stages.map(toEditable);
+  app.cur = Math.min(app.cur, app.stages.length - 1);
+  app.part = 0;
+  renderAll();
+}
+function renderAll() {
+  renderStageTabs(); renderPartTabs(); renderMeta(); drawCanvas();
+  document.querySelectorAll(".pbtn[data-tool]").forEach((b) => b.classList.toggle("active", b.dataset.tool === app.tool));
+}
+
+// イベント結線
+$("toolPen").onclick = () => { app.tool = "pen"; renderAll(); };
+$("toolEraser").onclick = () => { app.tool = "eraser"; renderAll(); };
+$("btnClear").onclick = () => { const px = curPixels(); for (const r of px) r.fill(false); drawCanvas(); refreshPreview(); };
+$("btnFlip").onclick = () => { const s = curStage(); s.parts[app.part] = flipPixelsH(s.parts[app.part]); drawCanvas(); };
+$("btnCopyFrom").onclick = () => {
+  const s = curStage();
+  const labels = s.parts.map((_, i) => `${i}:${partLabel(s, i)}`).join("  ");
+  const ans = prompt(`どのパーツから複製する？番号を入力\n${labels}`, "0");
+  const idx = +ans;
+  if (Number.isInteger(idx) && idx >= 0 && idx < s.parts.length && idx !== app.part) {
+    s.parts[app.part] = s.parts[idx].map((r) => [...r]);
+    drawCanvas(); refreshPreview();
+  }
+};
+$("cols").onchange = applyResize;
+$("rows").onchange = applyResize;
+$("zoom").onchange = () => { app.zoom = Math.max(6, Math.min(40, +$("zoom").value || 16)); drawCanvas(); };
+$("mName").oninput = (e) => { curStage().name = e.target.value; renderStageTabs(); };
+$("mBelly").oninput = (e) => { curStage().bellyRow = +e.target.value || 0; };
+$("mCrown").oninput = (e) => { const v = e.target.value; curStage().crownRows = v === "" ? null : (+v || 0); };
+$("mNoBreath").onchange = (e) => { curStage().noBreath = e.target.checked; };
+$("mPetOpen").onchange = (e) => { curStage().petOpen = e.target.checked; };
+$("btnSave").onclick = doSave;
+$("btnApply").onclick = () => applyStages(currentDesignStages());
+$("btnExport").onclick = doExport;
+$("btnImport").onclick = () => $("fileInput").click();
+$("fileInput").onchange = (e) => { if (e.target.files[0]) doImport(e.target.files[0]); };
+$("btnReload").onclick = loadGallery;
+$("btnDupStage").onclick = () => addStage("dup");
+$("btnDelStage").onclick = deleteStage;
+
+// サーバーなしで開いたとき用の最小フォールバック（clawd ステージ 1 つ）
+const FALLBACK_STAGES = [{
+  name: "clawd", bellyRow: 1, noBreath: true, petOpen: true,
+  frames: [[" ▐▛███▜▌", "▝▜█████▛▘", "  ▘▘ ▝▝"], [" ▐▛███▜▌", "▝▜█████▛▘", "  ▝▘ ▝▘"]],
+  blink: [" ▐█████▌", "▝▜█████▛▘", "  ▘▘ ▝▝"],
+}];
+
+// 起動
+(async function init() {
+  app.zoom = 12;
+  try {
+    const r = await fetch("/api/stages");
+    if (!r.ok) throw new Error();
+    const { stages } = await r.json();
+    app.hasServer = true;
+    $("conn").textContent = "● サーバー接続中";
+    $("conn").style.color = "var(--ok)";
+    loadStages(stages);
+  } catch {
+    app.hasServer = false;
+    $("conn").textContent = "● サーバー未接続（閲覧/JSON のみ）";
+    $("conn").style.color = "var(--danger)";
+    loadStages(FALLBACK_STAGES);
+  }
+  loadGallery();
+})();
+</script>
+</body>
+</html>
