@@ -205,6 +205,7 @@ export function parseUsageLine(line, tz = "Asia/Tokyo") {
   return {
     key: id || req ? `${id}:${req}` : null,
     day: dayKey(ts, tz),
+    ts,
     tokens,
     cost: usageCost(u, o.message.model),
   };
@@ -218,18 +219,13 @@ export function stageFor(total, thresholds = THRESHOLDS) {
   return { index: i, floor, ceil, progress: ceil === null ? 1 : (total - floor) / (ceil - floor) };
 }
 
-// ペースが算出できるようになるまでは 60 秒間隔でスキャンする（起動直後・日付またぎ直後の立ち上がり対策）
-export function nextScanDelay(samples, intervalMs = DATA_INTERVAL_MS) {
-  return computePace(samples) === null ? Math.min(60e3, intervalMs) : intervalMs;
-}
-
-export function computePace(samples) {
-  if (samples.length < 2) return null;
-  const first = samples[0];
-  const last = samples[samples.length - 1];
-  const span = last.t - first.t;
-  if (span < 5 * 60e3) return null;
-  return Math.max(0, ((last.total - first.total) / span) * 3600e3);
+// ペース = 直近1時間に書かれたトークン量（jsonl のタイムスタンプ基準）。
+// メモリ上の観測ではなくファイルの実データから測るので、再起動しても正確。
+export const PACE_WINDOW_MS = 60 * 60e3;
+export function computeHourPace(entries, now) {
+  let sum = 0;
+  for (const e of entries) if (now - e.ts <= PACE_WINDOW_MS) sum += e.tokens;
+  return sum;
 }
 
 export function strWidth(s) {
@@ -278,17 +274,20 @@ export function formatCountdown(ms) {
 export function formatPace(pace, lang = "ja") {
   if (pace === null) return TEXTS[lang].measuring;
   if (pace >= 1e6) return (pace / 1e6).toFixed(1) + "M tokens/h";
-  return Math.round(pace / 1e3) + "K tokens/h";
+  if (pace >= 1e3) return Math.round(pace / 1e3) + "K tokens/h";
+  return Math.round(pace) + " tokens/h";
 }
 
 export function createCollector(root, now = Date.now, tz = "Asia/Tokyo") {
   const files = new Map(); // path -> { offset, remainder }
   const daily = new Map(); // "YYYY-MM-DD" -> { tok, usd }
   const seen = new Set();  // "messageId:requestId"
+  let recent = [];         // 今日の { ts, tokens }（ペース算出用、直近1時間に剪定）
   let seenDay = dayKey(now(), tz);
 
   function rollover(today) {
     seen.clear();
+    recent = [];
     for (const k of [...daily.keys()]) if (k !== today) daily.delete(k);
     seenDay = today;
   }
@@ -304,6 +303,7 @@ export function createCollector(root, now = Date.now, tz = "Asia/Tokyo") {
     d.tok += p.tokens;
     d.usd += p.cost;
     daily.set(p.day, d);
+    if (p.day === seenDay) recent.push({ ts: p.ts, tokens: p.tokens });
   }
 
   function processFile(fp, st, midnight) {
@@ -349,12 +349,14 @@ export function createCollector(root, now = Date.now, tz = "Asia/Tokyo") {
         }
       }
     }
+    recent = recent.filter((e) => t - e.ts <= PACE_WINDOW_MS); // 直近1時間ぶんだけ保持
   }
 
   return {
     scan,
     todayTotal: () => daily.get(dayKey(now(), tz))?.tok || 0,
     todayCost: () => daily.get(dayKey(now(), tz))?.usd || 0,
+    recentEntries: () => recent,
   };
 }
 
@@ -1027,7 +1029,6 @@ function runLoop(opts = {}) {
   const T = TEXTS[cfg.language];
   const palette = detectPalette();
   const collector = createCollector(PROJECTS_ROOT, Date.now, cfg.timezone);
-  let samples = [];
   let lastDay = dayKey(Date.now(), cfg.timezone);
   let speech = T.firstSpeech;
   let lastSpeechAt = 0;
@@ -1083,17 +1084,16 @@ function runLoop(opts = {}) {
   const dataTick = () => {
     const now = Date.now();
     const today = dayKey(now, cfg.timezone);
-    if (today !== lastDay) { samples = []; lastDay = today; } // 日付またぎでペースをリセット
+    if (today !== lastDay) lastDay = today;
     collector.scan();
     const tot = collector.todayTotal();
     if (tot > lastTotalSeen) { lastGrowthAt = now; lastTotalSeen = tot; }
-    samples.push({ t: now, total: tot });
-    samples = samples.filter((s) => now - s.t <= 3600e3); // 直近 1 時間分だけ保持
   };
 
   const renderTick = () => {
     const now = Date.now();
     const total = collector.todayTotal();
+    const pace = computeHourPace(collector.recentEntries(), now);
     const s = stageFor(total, cfg.thresholds);
     const stage = STAGES[Math.min(s.index, STAGES.length - 1)];
     const stageName = T.stageNames[Math.min(s.index, T.stageNames.length - 1)];
@@ -1123,7 +1123,7 @@ function runLoop(opts = {}) {
     else art = stage.blink && now < blinkUntil ? stage.blink : stage.frames[frameIdx % stage.frames.length];
 
     if (now - lastSpeechAt >= SPEECH_INTERVAL_MS) {
-      speech = pickSpeech({ stageIndex: s.index, pace: computePace(samples), hour: hourIn(now, cfg.timezone), total, asleep }, Math.random, cfg.language);
+      speech = pickSpeech({ stageIndex: s.index, pace, hour: hourIn(now, cfg.timezone), total, asleep }, Math.random, cfg.language);
       lastSpeechAt = now;
     }
     if (asleep && !T.pools.asleep.includes(speech)) {
@@ -1136,7 +1136,7 @@ function runLoop(opts = {}) {
     const rows = out.rows || 24;
     const lines = composeScreen({
       artLines: art, bubbleText: speech, stageIndex: s.index, stageName,
-      total, progress: s.progress, ceil: s.ceil, floor: s.floor, pace: computePace(samples),
+      total, progress: s.progress, ceil: s.ceil, floor: s.floor, pace,
       cost: collector.todayCost(), nextScanInMs: nextScanAt - now, lang: cfg.language,
       zzzPhase: asleep ? Math.floor(now / 1000) % 3 : null,
       heartPhase: petted ? Math.floor(now / 300) % 3 : null,
@@ -1161,9 +1161,8 @@ function runLoop(opts = {}) {
   dataTick();
   renderTick();
   const scheduleScan = () => {
-    const delay = nextScanDelay(samples, cfg.intervalMs);
-    nextScanAt = Date.now() + delay;
-    setTimeout(() => { dataTick(); scheduleScan(); }, delay);
+    nextScanAt = Date.now() + cfg.intervalMs;
+    setTimeout(() => { dataTick(); scheduleScan(); }, cfg.intervalMs);
   };
   scheduleScan();
   setInterval(renderTick, RENDER_INTERVAL_MS);
@@ -1322,7 +1321,17 @@ async function launchEditor() {
     process.exit(1);
   }
   const url = `http://${process.env.HOST || "127.0.0.1"}:${process.env.PORT || 4173}`;
-  await import(pathToFileURL(serverPath).href); // 読み込むと listen まで走る
+  // すでに起動中なら二重起動（ポート衝突でクラッシュ）を避け、そのまま開く
+  let running = false;
+  try {
+    const res = await fetch(url + "/api/stages", { signal: AbortSignal.timeout(800) });
+    running = res.ok;
+  } catch { running = false; }
+  if (running) {
+    console.log(`すでに起動しているエディタを開くわ: ${url}`);
+  } else {
+    await import(pathToFileURL(serverPath).href); // 読み込むと listen まで走る
+  }
   openBrowser(url);
 }
 

@@ -7,12 +7,12 @@ import path from "node:path";
 import {
   JST_OFFSET_MS, THRESHOLDS,
   dayKeyJST, jstMidnightMs, parseUsageLine,
-  stageFor, computePace,
+  stageFor, computeHourPace,
   strWidth, makeBubble, gauge, formatPace,
   createCollector,
   pickSpeech,
   composeScreen, ART_H, BUBBLE_H, STAGES,
-  PRICING, formatCost, nextScanDelay, rippleLevel, RIPPLE_RAMP, DATA_INTERVAL_MS,
+  PRICING, formatCost, rippleLevel, RIPPLE_RAMP, DATA_INTERVAL_MS,
   formatTokensShort, topLineColors, SLEEP_AFTER_MS, formatCountdown,
   maxContentWidth, MIN_COLS, MIN_ROWS, maxContentHeight, SPEECH_POOLS, fitLines, zzzLines, breathArt,
   dayKey, midnightMs, resolveConfig, mergeLiteLLMPricing, TEXTS,
@@ -75,15 +75,17 @@ test("stageFor: progress は現ステージ内の進捗率", () => {
   assert.equal(s.progress, 0.5);
 });
 
-test("computePace: サンプル不足・期間不足は null", () => {
-  assert.equal(computePace([]), null);
-  assert.equal(computePace([{ t: 0, total: 100 }]), null);
-  assert.equal(computePace([{ t: 0, total: 0 }, { t: 60e3, total: 100 }]), null); // 1分は不足
-});
-
-test("computePace: tokens/h を返す。日付またぎの負値は 0 に丸める", () => {
-  assert.equal(computePace([{ t: 0, total: 0 }, { t: 30 * 60e3, total: 5_000_000 }]), 10_000_000);
-  assert.equal(computePace([{ t: 0, total: 5_000_000 }, { t: 30 * 60e3, total: 0 }]), 0);
+test("computeHourPace: 直近1時間に書かれたトークン量を合計する", () => {
+  const now = 10 * 3600e3;
+  const entries = [
+    { ts: now - 90 * 60e3, tokens: 1000 }, // 1.5時間前 → 範囲外
+    { ts: now - 30 * 60e3, tokens: 2000 }, // 30分前 → 算入
+    { ts: now - 5 * 60e3, tokens: 3000 },  // 5分前 → 算入
+    { ts: now, tokens: 500 },              // たった今 → 算入
+  ];
+  assert.equal(computeHourPace(entries, now), 2000 + 3000 + 500);
+  assert.equal(computeHourPace([], now), 0); // データなしは 0
+  assert.equal(computeHourPace([{ ts: now - 2 * 3600e3, tokens: 9 }], now), 0); // 全部1時間より前
 });
 
 test("strWidth: 全角は 2、半角・罫線・ブロックは 1", () => {
@@ -111,6 +113,7 @@ test("formatPace: null は計測中、それ以外は単位付き", () => {
   assert.equal(formatPace(null), "計測中…");
   assert.equal(formatPace(4_200_000), "4.2M tokens/h");
   assert.equal(formatPace(50_000), "50K tokens/h");
+  assert.equal(formatPace(0), "0 tokens/h");
 });
 
 function usageLine({ id, req, ts, out = 100 }) {
@@ -287,11 +290,6 @@ test("formatCost: 0.5ドル超は2桁、以下は4桁", () => {
   assert.equal(formatCost(0.0076), "$0.0076");
 });
 
-test("nextScanDelay: ペース未確定なら60秒、確定後は通常間隔", () => {
-  assert.equal(nextScanDelay([]), 60e3);
-  assert.equal(nextScanDelay([{ t: 0, total: 0 }, { t: 60e3, total: 1 }]), 60e3); // 5分未満
-  assert.equal(nextScanDelay([{ t: 0, total: 0 }, { t: 6 * 60e3, total: 1 }]), DATA_INTERVAL_MS);
-});
 
 test("rippleLevel: 波頭で最大レベル、未到達はnull、本家定数のグラデーション", () => {
   assert.equal(rippleLevel(50, 10), null);          // 波がまだ届かない
@@ -405,9 +403,6 @@ test("stageFor: 閾値を引数で差し替えられる", () => {
   assert.equal(stageFor(50, [0, 10, 100]).ceil, 100);
 });
 
-test("nextScanDelay: 間隔を引数で差し替えられる", () => {
-  assert.equal(nextScanDelay([{ t: 0, total: 0 }, { t: 6 * 60e3, total: 1 }], 7 * 60e3), 7 * 60e3);
-});
 
 test("TEXTS: ja/en が同じ構造を持つ", () => {
   for (const lang of ["ja", "en"]) {
