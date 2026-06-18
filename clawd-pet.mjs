@@ -996,21 +996,34 @@ function paintCentered(out, lines, art, opts) {
   const leftPad = Math.max(0, Math.floor((cols - L - R) / 2));
   const topPad = Math.max(0, Math.floor((rows - 1 - footer.length - fitted.length) / 2));
 
-  let rendered;
   if (ripple) {
+    // 波紋は画面いっぱいに広げる。上下左右のマージン（空きセル）も巻き込む
+    const top = topLineColors(art.length, crownRows, palette);
+    const footerStart = (rows - 1) - footer.length;
+    const waveLines = [];
+    const baseColors = [];
+    for (let i = 0; i < topPad; i++) { waveLines.push(""); baseColors.push(""); }
+    for (let i = 0; i < fitted.length; i++) {
+      waveLines.push(" ".repeat(leftPad) + fitted[i]);
+      baseColors.push(i + trimmed < top.length ? top[i + trimmed] : "");
+    }
+    while (waveLines.length < footerStart) { waveLines.push(""); baseColors.push(""); }
     const origin = {
-      col: AXIS_COL,
-      row: BUBBLE_H + (ART_H - art.length) + Math.floor(art.length / 2) - trimmed,
+      col: leftPad + AXIS_COL,
+      row: topPad + BUBBLE_H + (ART_H - art.length) + Math.floor(art.length / 2) - trimmed,
     };
     const travel = (ripple.now - ripple.start) * RIPPLE_SPEED;
-    const top = topLineColors(art.length, crownRows, palette);
-    const baseColors = fitted.map((_, i) => (i + trimmed < top.length ? top[i + trimmed] : ""));
-    rendered = applyRipple(fitted, origin, travel, baseColors, R);
-  } else {
-    const top = topLineColors(art.length, crownRows, { ...palette, body });
-    rendered = fitted.map((line, i) => (i + trimmed < top.length ? top[i + trimmed] + line + RESET : line));
+    const rippled = applyRipple(waveLines, origin, travel, baseColors, cols);
+    let buf = "\x1b[H";
+    for (const line of rippled) buf += line + "\x1b[K\n";
+    for (const f of footer) buf += f + "\x1b[K\n";
+    buf += "\x1b[J";
+    out.write(buf);
+    return;
   }
 
+  const top = topLineColors(art.length, crownRows, { ...palette, body });
+  const rendered = fitted.map((line, i) => (i + trimmed < top.length ? top[i + trimmed] + line + RESET : line));
   const pad = " ".repeat(leftPad);
   let buf = "\x1b[H";
   for (let i = 0; i < topPad; i++) buf += "\x1b[K\n";
