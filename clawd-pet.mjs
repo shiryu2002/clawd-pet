@@ -515,9 +515,9 @@ export const STAGES = [
         "   ▟▙          ▟▙",
         "  ▗▟████████████▙▖",
         " ▐█████ ███ █████▌",
-        " ▐████████████████▌ ▗▖",
-        " ▐████████████████▙▄▟▛▘",
-        " ▐████████████████▌",
+        " █████████████████▌  ▟▘",
+        " █████████████████▙▄▟▘",
+        " ▜████████████████▌",
         " ▝▜██████████████▛▘",
         "   ▐█▌        ▐█▌",
         "    ▘▘        ▝▝",
@@ -528,10 +528,10 @@ export const STAGES = [
         "   ▟▙          ▟▙",
         "  ▗▟████████████▙▖",
         " ▐█████ ███ █████▌",
-        " ▐████████████████▌",
-        " ▐████████████████▙▄▟▖",
-        " ▐████████████████▌",
-        " ▝▜██████████████▛▘",
+        " █████████████████▌",
+        " █████████████████▙▄▄▖",
+        " ▜████████████████▌  ▜▖",
+        " ▝▜██████████████▛▘   ▌",
         "   ▐█▌        ▐█▌",
         "    ▘▘        ▝▝",
       ],
@@ -542,9 +542,9 @@ export const STAGES = [
       "   ▟▙          ▟▙",
       "  ▗▟████████████▙▖",
       " ▐█████▄███▄█████▌",
-      " ▐████████████████▌ ▗▖",
-      " ▐████████████████▙▄▟▛▘",
-      " ▐████████████████▌",
+      " █████████████████▌  ▟▘",
+      " █████████████████▙▄▟▘",
+      " ▜████████████████▌",
       " ▝▜██████████████▛▘",
       "   ▐█▌        ▐█▌",
       "    ▘▘        ▝▝",
@@ -828,26 +828,37 @@ export function previewSpec(stageIndex, state, now) {
 }
 
 // 進化エフェクト: 本家 ultracode 選択時の波紋（UltraRippleText）の再現
-// グラデーション端点 rgb(62,22,118)→rgb(140,80,240)、波長 20 セル、速度 0.03 セル/ms は本家バイナリの定数
+// 既定のグラデーション端点 rgb(62,22,118)→rgb(140,80,240)、波長 20 セル、速度 0.03 セル/ms は本家バイナリの定数
+export const RIPPLE_COLOR_FROM = [62, 22, 118];  // 波の内側の色
+export const RIPPLE_COLOR_TO = [140, 80, 240];   // 波の外側の色
 export const RIPPLE_RAMP = Array.from({ length: 8 }, (_, i) => {
   const t = i / 7;
   const lerp = (a, b) => Math.round(a + (b - a) * t);
-  return [lerp(62, 140), lerp(22, 80), lerp(118, 240)];
+  return [lerp(RIPPLE_COLOR_FROM[0], RIPPLE_COLOR_TO[0]), lerp(RIPPLE_COLOR_FROM[1], RIPPLE_COLOR_TO[1]), lerp(RIPPLE_COLOR_FROM[2], RIPPLE_COLOR_TO[2])];
 });
-const RIPPLE_WAVELENGTH = 20;
-const RIPPLE_SPEED = 0.03;            // セル/ms
+export const RIPPLE_WAVELENGTH = 20;
+export const RIPPLE_SPEED = 0.03;     // セル/ms
 export const RIPPLE_DURATION_MS = 4000;
 const RIPPLE_W = 56;                  // 波紋を塗る既定幅
 
-export function rippleLevel(dist, travel) {
-  if (dist > travel) return null;
+// span は「発生していた輪の幅」。発生が止まると内側 (dist < travel - span) は
+// 輪が通り過ぎて空き、外側の輪だけが travel に従って広がっていく。
+// span 既定 = travel（＝中心まで埋まる従来挙動）。
+// 波紋の総寿命(ms): 発生時間 + 最後の輪が画面端(maxDist セル)へ抜けるまでの時間。
+export function rippleLifetimeMs(maxDist) {
+  return RIPPLE_DURATION_MS + maxDist / RIPPLE_SPEED;
+}
+
+export function rippleLevel(dist, travel, span = travel) {
+  if (dist > travel) return null;          // まだ波が届いていない
+  if (dist < travel - span) return null;   // 発生停止後、輪が通り過ぎた内側
   const q = (((dist - travel) % RIPPLE_WAVELENGTH) + RIPPLE_WAVELENGTH) % RIPPLE_WAVELENGTH;
   const k = (1 + Math.cos((2 * Math.PI * q) / RIPPLE_WAVELENGTH)) / 2;
   return Math.min(RIPPLE_RAMP.length - 1, Math.round(k * (RIPPLE_RAMP.length - 1)));
 }
 
 // 各行を波紋の背景色つき ANSI 文字列にする。覆われていない部分は baseColors[r] で描く
-export function applyRipple(lines, origin, travel, baseColors, width = RIPPLE_W) {
+export function applyRipple(lines, origin, travel, baseColors, width = RIPPLE_W, span = travel) {
   const out = [];
   for (let r = 0; r < lines.length; r++) {
     let line = lines[r];
@@ -859,7 +870,7 @@ export function applyRipple(lines, origin, travel, baseColors, width = RIPPLE_W)
       const w = strWidth(ch);
       const dx = col + w / 2 - origin.col;
       const dy = (r - origin.row) * 2; // 行方向は 2 倍（本家と同じアスペクト補正）
-      const level = rippleLevel(Math.sqrt(dx * dx + dy * dy), travel);
+      const level = rippleLevel(Math.sqrt(dx * dx + dy * dy), travel, span);
       const last = runs[runs.length - 1];
       if (last && last.level === level) last.text += ch;
       else runs.push({ level, text: ch });
@@ -1013,7 +1024,9 @@ function paintCentered(out, lines, art, opts) {
       row: topPad + BUBBLE_H + (ART_H - art.length) + Math.floor(art.length / 2) - trimmed,
     };
     const travel = (ripple.now - ripple.start) * RIPPLE_SPEED;
-    const rippled = applyRipple(waveLines, origin, travel, baseColors, cols);
+    // 発生は RIPPLE_DURATION_MS で止め、以降は最後の輪が外へ抜けるに任せる
+    const span = Math.min(travel, RIPPLE_DURATION_MS * RIPPLE_SPEED);
+    const rippled = applyRipple(waveLines, origin, travel, baseColors, cols, span);
     let buf = "\x1b[H";
     for (const line of rippled) buf += line + "\x1b[K\n";
     for (const f of footer) buf += f + "\x1b[K\n";
@@ -1122,7 +1135,9 @@ function runLoop(opts = {}) {
     } else {
       lastStageIndex = s.index; // 日付リセットで戻ったときも追従
     }
-    const rippleActive = rippleStart !== null && now - rippleStart < RIPPLE_DURATION_MS;
+    const cols0 = out.columns || 80, rows0 = out.rows || 24;
+    const rippleLife = rippleLifetimeMs(Math.sqrt(cols0 * cols0 + (rows0 * 2) * (rows0 * 2)));
+    const rippleActive = rippleStart !== null && now - rippleStart < rippleLife;
     const petted = !rippleActive && (opts.demoPet || now - lastPetAt < PET_DURATION_MS);
     const asleep = !rippleActive && !petted && (opts.demoSleep || now - lastGrowthAt >= SLEEP_AFTER_MS);
 
@@ -1219,10 +1234,12 @@ function interactivePreview(cfg) {
     const now = Date.now();
     const state = PREVIEW_STATES[st];
     const stageObj = STAGES[stage];
-    if (state === "ripple" && now - rippleStart >= RIPPLE_DURATION_MS) rippleStart = now; // ループ再生
-    const spec = previewSpec(stage, state, now);
     const cols = out.columns || 80;
     const rows = out.rows || 24;
+    // ループ再生は、最後の輪が画面外へ抜けきってから
+    const rippleLife = rippleLifetimeMs(Math.sqrt(cols * cols + (rows * 2) * (rows * 2)));
+    if (state === "ripple" && now - rippleStart >= rippleLife) rippleStart = now;
+    const spec = previewSpec(stage, state, now);
     const footer = [
       `${GRAY} Stage ${stage + 1}/${STAGES.length} · ${state}${RESET}`,
       cfg.language === "ja"

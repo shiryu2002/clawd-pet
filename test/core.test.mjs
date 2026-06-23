@@ -12,7 +12,7 @@ import {
   createCollector,
   pickSpeech,
   composeScreen, ART_H, BUBBLE_H, STAGES,
-  PRICING, formatCost, rippleLevel, RIPPLE_RAMP, DATA_INTERVAL_MS,
+  PRICING, formatCost, rippleLevel, RIPPLE_RAMP, DATA_INTERVAL_MS, rippleLifetimeMs, RIPPLE_DURATION_MS, RIPPLE_SPEED,
   formatTokensShort, topLineColors, SLEEP_AFTER_MS, formatCountdown,
   maxContentWidth, MIN_COLS, MIN_ROWS, maxContentHeight, SPEECH_POOLS, fitLines, zzzLines, breathArt,
   dayKey, midnightMs, resolveConfig, mergeLiteLLMPricing, TEXTS,
@@ -687,4 +687,20 @@ test("--edit: エディタが見つからなければ案内して exit 1", () =>
   assert.equal(code, 1);
   assert.ok(out.includes("clawd-web-editor"));
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test("rippleLevel: span で発生停止後は内側が空く", () => {
+  // span 既定(=travel)は中心まで埋まる（従来挙動）
+  assert.notEqual(rippleLevel(0, 30), null);
+  // span=10 → 可視帯は dist∈[travel-span, travel]=[20,30]。内側は空く
+  assert.equal(rippleLevel(0, 30, 10), null);   // 通り過ぎた内側
+  assert.equal(rippleLevel(15, 30, 10), null);  // 帯より内側
+  assert.notEqual(rippleLevel(25, 30, 10), null); // 帯の中
+  assert.equal(rippleLevel(31, 30, 10), null);  // まだ届かない外側
+});
+
+test("rippleLifetimeMs: 発生時間 + 端まで抜ける時間", () => {
+  assert.equal(rippleLifetimeMs(0), RIPPLE_DURATION_MS);
+  assert.equal(rippleLifetimeMs(60), RIPPLE_DURATION_MS + 60 / RIPPLE_SPEED);
+  assert.ok(rippleLifetimeMs(73) > RIPPLE_DURATION_MS); // 画面端ぶん長い
 });
