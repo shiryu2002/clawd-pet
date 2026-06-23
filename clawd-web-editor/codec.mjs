@@ -154,6 +154,136 @@ export function replaceStagesInSource(source, stages) {
   return source.slice(0, start) + serializeStages(stages) + source.slice(end);
 }
 
+// ── セリフ（TEXTS.<lang>.pools）の相互変換 ──────────────────────────
+
+// pools オブジェクト → `pools: { ... }` の文字列（キー順は渡された順を維持）。
+// baseIndent は `pools` キーの字下げ（clawd-pet.mjs では4スペース）。
+export function serializePools(pools, baseIndent = "    ") {
+  const cat = baseIndent + "  ";
+  const item = baseIndent + "    ";
+  const lines = ["pools: {"];
+  for (const [key, arr] of Object.entries(pools)) {
+    lines.push(`${cat}${key}: [`);
+    for (const s of arr) lines.push(`${item}${JSON.stringify(s)},`);
+    lines.push(`${cat}],`);
+  }
+  lines.push(`${baseIndent}}`);
+  return lines.join("\n");
+}
+
+// 受け取った pools を「キー: 文字列配列（空行は除く）」に正規化する。
+export function normalizePools(pools) {
+  const out = {};
+  for (const [key, arr] of Object.entries(pools || {})) {
+    out[key] = (Array.isArray(arr) ? arr : []).map((s) => String(s).trim()).filter(Boolean);
+  }
+  return out;
+}
+
+// source 中の fromIndex 以降にある最初の `pools: {` の範囲を返す（無ければ null）。
+function findPoolsRange(source, fromIndex) {
+  const marker = "pools: {";
+  const start = source.indexOf(marker, fromIndex);
+  if (start < 0) return null;
+  let depth = 0, i = start + marker.length - 1; // '{' の位置
+  for (; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") { depth--; if (depth === 0) break; }
+  }
+  if (depth !== 0) throw new Error("pools の閉じ括弧が見つからない");
+  return { start, end: i + 1 };
+}
+
+// TEXTS 内の ja / en の pools ブロックを順に置換する。
+// langs = { ja?: poolsObj, en?: poolsObj }（出現順は ja → en）。
+export function replacePoolsInSource(source, langs) {
+  let result = source;
+  let from = 0;
+  for (const lang of ["ja", "en"]) {
+    const r = findPoolsRange(result, from);
+    if (!r) throw new Error("pools の定義が見つからない");
+    if (langs[lang]) {
+      const replacement = serializePools(langs[lang]);
+      result = result.slice(0, r.start) + replacement + result.slice(r.end);
+      from = r.start + replacement.length;
+    } else {
+      from = r.end;
+    }
+  }
+  return result;
+}
+
+// ── 設定値（export const の数値/配列）の置換 ─────────────────────────
+
+// `export const NAME = <値>;` の範囲を返す（値は最初の ';' まで）。
+export function findConstRange(source, name) {
+  const re = new RegExp("export const " + name + "\\s*=\\s*");
+  const m = re.exec(source);
+  if (!m) return null;
+  const valStart = m.index + m[0].length;
+  const semi = source.indexOf(";", valStart);
+  if (semi < 0) return null;
+  return { start: m.index, valStart, valEnd: semi, end: semi + 1 };
+}
+
+export function serializeConstValue(raw) {
+  return Array.isArray(raw) ? `[${raw.join(", ")}]` : String(raw);
+}
+
+// rawByName = { NAME: number | number[] } の各定数値を置換する。
+export function replaceConstsInSource(source, rawByName) {
+  let result = source;
+  for (const [name, raw] of Object.entries(rawByName)) {
+    const r = findConstRange(result, name);
+    if (!r) throw new Error(`定数 ${name} が見つからない`);
+    result = result.slice(0, r.valStart) + serializeConstValue(raw) + result.slice(r.valEnd);
+  }
+  return result;
+}
+
+// エディタで編集できる設定の一覧（A: 成長/睡眠, B: タイミング, C: 波紋）。
+// target=source は clawd-pet.mjs の定数、target=config は config.json を書き換える。
+export const SETTINGS_FIELDS = [
+  { key: "thresholds", label: "進化しきい値（M tokens, カンマ区切り）", group: "A", target: "config", cfgKey: "thresholds", unit: "Mtok" },
+  { key: "sleep", label: "睡眠までの無活動（分）", group: "A", target: "source", name: "SLEEP_AFTER_MS", unit: "min" },
+  { key: "scan", label: "集計スキャン間隔（秒）", group: "B", target: "config", cfgKey: "intervalSeconds", unit: "sec-raw" },
+  { key: "render", label: "アニメ描画間隔（ms）", group: "B", target: "source", name: "RENDER_INTERVAL_MS", unit: "ms" },
+  { key: "speech", label: "セリフ入替間隔（秒）", group: "B", target: "source", name: "SPEECH_INTERVAL_MS", unit: "sec" },
+  { key: "pet", label: "撫でられ継続（秒）", group: "B", target: "source", name: "PET_DURATION_MS", unit: "sec" },
+  { key: "pace", label: "ペース集計の窓（分）", group: "B", target: "source", name: "PACE_WINDOW_MS", unit: "min" },
+  { key: "rDur", label: "波紋の再生（秒）", group: "C", target: "source", name: "RIPPLE_DURATION_MS", unit: "sec" },
+  { key: "rSpeed", label: "波紋の速さ（cell/ms）", group: "C", target: "source", name: "RIPPLE_SPEED", unit: "float" },
+  { key: "rWave", label: "波紋の波長（cell）", group: "C", target: "source", name: "RIPPLE_WAVELENGTH", unit: "int" },
+  { key: "rFrom", label: "波紋の色・内側（R,G,B）", group: "C", target: "source", name: "RIPPLE_COLOR_FROM", unit: "rgb" },
+  { key: "rTo", label: "波紋の色・外側（R,G,B）", group: "C", target: "source", name: "RIPPLE_COLOR_TO", unit: "rgb" },
+];
+
+// 内部 raw 値 → 入力欄の表示文字列
+export function settingToDisplay(unit, raw) {
+  switch (unit) {
+    case "Mtok": return (raw || []).map((n) => n / 1e6).join(", ");
+    case "min": return String(raw / 60000);
+    case "sec": return String(raw / 1000);
+    case "rgb": return (raw || []).join(", ");
+    default: return String(raw); // sec-raw / ms / float / int
+  }
+}
+
+// 入力欄の文字列 → 内部 raw 値（保存・適用に使う）
+export function displayToSetting(unit, str) {
+  const nums = String(str).split(",").map((s) => Number(s.trim()));
+  switch (unit) {
+    case "Mtok": return nums.map((m) => Math.round(m * 1e6));
+    case "min": return Math.round(nums[0] * 60000);
+    case "sec": return Math.round(nums[0] * 1000);
+    case "ms": return Math.round(nums[0]);
+    case "int": return Math.round(nums[0]);
+    case "rgb": return nums.slice(0, 3).map((n) => Math.round(n));
+    default: return nums[0]; // sec-raw / float
+  }
+}
+
 // ステージのメタ情報だけを抜き出す（保存 JSON 用に正規化）。
 export function normalizeStage(stage) {
   const out = {

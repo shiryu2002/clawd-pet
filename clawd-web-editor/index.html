@@ -153,6 +153,27 @@
     </div>
 
     <div class="card">
+      <h2>セリフ</h2>
+      <div class="tabs" id="speechLangTabs"></div>
+      <div id="speechFields"></div>
+      <div class="row spread" style="margin-top:8px;">
+        <span class="hint">1 行に 1 セリフ。空行は無視</span>
+        <button class="apply" id="btnApplySpeech">セリフを適用</button>
+      </div>
+      <div class="legend">適用前に自動でバックアップを作り、構文チェックに通った場合のみ書き込む。反映には clawd 本体／プレビューの再起動が必要。</div>
+    </div>
+
+    <div class="card">
+      <h2>設定</h2>
+      <div id="settingsFields"></div>
+      <div class="row spread" style="margin-top:8px;">
+        <span class="hint">A:成長/睡眠 B:タイミング C:波紋</span>
+        <button class="apply" id="btnApplySettings">設定を適用</button>
+      </div>
+      <div class="legend">しきい値・スキャン間隔は config.json、その他は clawd-pet.mjs に書き込む。反映には再起動が必要。</div>
+    </div>
+
+    <div class="card">
       <h2>保存済みデザイン</h2>
       <div class="row" style="margin-bottom:8px;">
         <button class="btn mini" id="btnReload">一覧を更新</button>
@@ -167,6 +188,7 @@
 <script type="module">
 import {
   QUAD_CHARS, encodeArt, artToPixels, gridSizeForArts, makePixels, flipPixelsH,
+  SETTINGS_FIELDS, settingToDisplay, displayToSetting,
 } from "./codec.mjs";
 
 // ---- 状態 ----------------------------------------------------------------
@@ -534,6 +556,123 @@ const FALLBACK_STAGES = [{
   blink: [" ▐█████▌", "▝▜█████▛▘", "  ▘▘ ▝▝"],
 }];
 
+// ---- セリフ編集 ----------------------------------------------------------
+const SPEECH_CATS = [
+  ["petted", "なでなで"], ["asleep", "すいみん"], ["legend", "でんせつ"],
+  ["night", "しんや"], ["burning", "ハイペース"], ["quiet", "しずか"], ["generic", "つうじょう"],
+];
+const speech = { data: { ja: {}, en: {} }, lang: "ja" };
+
+function renderSpeechTabs() {
+  const tabs = $("speechLangTabs");
+  tabs.innerHTML = "";
+  for (const lang of ["ja", "en"]) {
+    const b = document.createElement("button");
+    b.className = "tab" + (speech.lang === lang ? " active" : "");
+    b.textContent = lang === "ja" ? "日本語" : "English";
+    b.onclick = () => { captureSpeechFields(); speech.lang = lang; renderSpeechTabs(); renderSpeechFields(); };
+    tabs.appendChild(b);
+  }
+}
+
+function renderSpeechFields() {
+  const wrap = $("speechFields");
+  wrap.innerHTML = "";
+  const pools = speech.data[speech.lang] || {};
+  for (const [key, label] of SPEECH_CATS) {
+    const lab = document.createElement("label");
+    lab.textContent = label;
+    lab.style.cssText = "display:block; color:var(--muted); font-size:11px; margin:6px 0 2px;";
+    const ta = document.createElement("textarea");
+    ta.id = "speech_" + key;
+    ta.rows = Math.max(2, (pools[key] || []).length);
+    ta.value = (pools[key] || []).join("\n");
+    ta.style.cssText = "width:100%; box-sizing:border-box; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:inherit; resize:vertical;";
+    wrap.append(lab, ta);
+  }
+}
+
+function captureSpeechFields() {
+  const pools = speech.data[speech.lang] = speech.data[speech.lang] || {};
+  for (const [key] of SPEECH_CATS) {
+    const ta = document.getElementById("speech_" + key);
+    if (ta) pools[key] = ta.value.split("\n").map((s) => s.trim()).filter(Boolean);
+  }
+}
+
+async function loadSpeech() {
+  if (!app.hasServer) return;
+  try {
+    const r = await fetch("/api/speech");
+    if (!r.ok) return;
+    speech.data = await r.json();
+    renderSpeechTabs();
+    renderSpeechFields();
+  } catch { /* セリフ取得失敗時は何もしない */ }
+}
+
+async function applySpeechEdits() {
+  if (!app.hasServer) { toast("サーバー未接続", "var(--danger)"); return; }
+  captureSpeechFields();
+  const r = await fetch("/api/speech/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(speech.data) });
+  const j = await r.json();
+  if (j.ok) toast("セリフを適用した（再起動で反映）"); else toast("適用失敗: " + j.error, "var(--danger)");
+}
+$("btnApplySpeech").onclick = applySpeechEdits;
+
+// ---- 設定編集（A: 成長/睡眠, B: タイミング, C: 波紋） --------------------
+const settingsState = { values: {} };
+const GROUP_LABEL = { A: "成長・睡眠", B: "タイミング", C: "波紋" };
+
+function renderSettings() {
+  const wrap = $("settingsFields");
+  wrap.innerHTML = "";
+  let lastGroup = null;
+  for (const f of SETTINGS_FIELDS) {
+    if (f.group !== lastGroup) {
+      lastGroup = f.group;
+      const h = document.createElement("div");
+      h.textContent = `${f.group}. ${GROUP_LABEL[f.group]}`;
+      h.style.cssText = "color:var(--accent); font-size:11px; font-weight:bold; margin:8px 0 2px;";
+      wrap.appendChild(h);
+    }
+    const lab = document.createElement("label");
+    lab.textContent = f.label;
+    lab.style.cssText = "display:block; color:var(--muted); font-size:11px; margin:4px 0 1px;";
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.id = "set_" + f.key;
+    const raw = settingsState.values[f.key];
+    inp.value = raw == null ? "" : settingToDisplay(f.unit, raw);
+    inp.style.cssText = "width:100%; box-sizing:border-box; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:5px 8px; font:inherit;";
+    wrap.append(lab, inp);
+  }
+}
+
+async function loadSettings() {
+  if (!app.hasServer) return;
+  try {
+    const r = await fetch("/api/settings");
+    if (!r.ok) return;
+    settingsState.values = (await r.json()).values || {};
+    renderSettings();
+  } catch { /* 設定取得失敗時は何もしない */ }
+}
+
+async function applySettingsEdits() {
+  if (!app.hasServer) { toast("サーバー未接続", "var(--danger)"); return; }
+  const values = {};
+  for (const f of SETTINGS_FIELDS) {
+    const inp = document.getElementById("set_" + f.key);
+    if (inp && inp.value.trim() !== "") values[f.key] = displayToSetting(f.unit, inp.value);
+  }
+  const r = await fetch("/api/settings/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ values }) });
+  const j = await r.json();
+  if (j.ok) { toast("設定を適用した（再起動で反映）"); loadSettings(); }
+  else toast("適用失敗: " + j.error, "var(--danger)");
+}
+$("btnApplySettings").onclick = applySettingsEdits;
+
 // 起動
 (async function init() {
   app.zoom = 12;
@@ -552,6 +691,8 @@ const FALLBACK_STAGES = [{
     loadStages(FALLBACK_STAGES);
   }
   loadGallery();
+  loadSpeech();
+  loadSettings();
 })();
 </script>
 </body>

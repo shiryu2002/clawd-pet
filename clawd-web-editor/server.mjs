@@ -17,7 +17,10 @@ import path from "node:path";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { replaceStagesInSource, normalizeStage } from "./codec.mjs";
+import {
+  replaceStagesInSource, normalizeStage, replacePoolsInSource, normalizePools,
+  replaceConstsInSource, SETTINGS_FIELDS,
+} from "./codec.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // 既定は本体の clawd-pet.mjs と隣の designs/。テスト用に環境変数で差し替えられる。
@@ -71,11 +74,8 @@ function listDesigns() {
 }
 
 // clawd-pet.mjs を書き換える。検証に通ってからしか本体に触れない。
-function applyToSource(stages) {
-  const source = fs.readFileSync(PET_PATH, "utf8");
-  const next = replaceStagesInSource(source, stages);
-
-  // まず一時ファイルで構文チェック。壊れた状態を本体に書き込まないための関所。
+// 生成したソースを構文チェック → バックアップ → 上書き。壊れた状態は書き込まない。
+function writeSourceChecked(next) {
   const tmp = path.join(os.tmpdir(), `clawd-pet-check-${process.pid}-${Date.now()}.mjs`);
   fs.writeFileSync(tmp, next);
   try {
@@ -86,12 +86,71 @@ function applyToSource(stages) {
   }
   fs.rmSync(tmp, { force: true });
 
-  // バックアップを取ってから上書き。
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backup = `${PET_PATH}.bak-${stamp}`;
   fs.copyFileSync(PET_PATH, backup);
   fs.writeFileSync(PET_PATH, next);
   return { backup: path.basename(backup) };
+}
+
+function applyToSource(stages) {
+  const source = fs.readFileSync(PET_PATH, "utf8");
+  return writeSourceChecked(replaceStagesInSource(source, stages));
+}
+
+function applySpeech(langs) {
+  const source = fs.readFileSync(PET_PATH, "utf8");
+  const norm = {};
+  for (const lang of ["ja", "en"]) if (langs[lang]) norm[lang] = normalizePools(langs[lang]);
+  return writeSourceChecked(replacePoolsInSource(source, norm));
+}
+
+// 設定: source 定数 と config.json の二刀流
+function petConfigDir() {
+  return process.env.CLAWD_PET_CONFIG_DIR ||
+    path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "clawd-pet");
+}
+function loadPetConfig() {
+  try { return JSON.parse(fs.readFileSync(path.join(petConfigDir(), "config.json"), "utf8")); } catch { return {}; }
+}
+
+function validateSetting(f, raw) {
+  if (f.unit === "Mtok") {
+    if (!Array.isArray(raw) || raw.length < 2 || !raw.every((n, i) => Number.isFinite(n) && (i === 0 || n > raw[i - 1]))) {
+      throw new Error("進化しきい値は昇順の数値が2つ以上必要");
+    }
+  } else if (f.unit === "rgb") {
+    if (!Array.isArray(raw) || raw.length !== 3 || !raw.every((n) => Number.isFinite(n) && n >= 0 && n <= 255)) {
+      throw new Error(`${f.label} は 0〜255 の R,G,B`);
+    }
+  } else if (!Number.isFinite(raw) || raw <= 0) {
+    throw new Error(`${f.label} は正の数`);
+  }
+}
+
+function applySettings(values) {
+  const srcByName = {};
+  const cfgPatch = {};
+  for (const f of SETTINGS_FIELDS) {
+    if (!(f.key in values)) continue;
+    const raw = values[f.key];
+    validateSetting(f, raw);
+    if (f.target === "source") srcByName[f.name] = raw;
+    else cfgPatch[f.cfgKey] = raw;
+  }
+  const result = {};
+  if (Object.keys(srcByName).length) {
+    const source = fs.readFileSync(PET_PATH, "utf8");
+    Object.assign(result, writeSourceChecked(replaceConstsInSource(source, srcByName)));
+  }
+  if (Object.keys(cfgPatch).length) {
+    const dir = petConfigDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "config.json");
+    fs.writeFileSync(file, JSON.stringify({ ...loadPetConfig(), ...cfgPatch }, null, 2) + "\n");
+    result.config = file;
+  }
+  return result;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -141,6 +200,39 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const stages = sanitizeStages(body.stages);
       const result = applyToSource(stages);
+      return sendJson(res, 200, { ok: true, ...result });
+    }
+
+    // 現在のセリフ（言語ごとの pools）
+    if (req.method === "GET" && pathname === "/api/speech") {
+      const mod = await import(pathToFileURL(PET_PATH).href + "?t=" + Date.now());
+      return sendJson(res, 200, { ja: mod.TEXTS.ja.pools, en: mod.TEXTS.en.pools });
+    }
+
+    // セリフをコードへ反映
+    if (req.method === "POST" && pathname === "/api/speech/apply") {
+      const body = await readBody(req);
+      const result = applySpeech({ ja: body.ja, en: body.en });
+      return sendJson(res, 200, { ok: true, ...result });
+    }
+
+    // 現在の設定（source 定数 + config 由来の実効値）
+    if (req.method === "GET" && pathname === "/api/settings") {
+      const mod = await import(pathToFileURL(PET_PATH).href + "?t=" + Date.now());
+      const cfg = mod.resolveConfig(process.env, loadPetConfig());
+      const values = {};
+      for (const f of SETTINGS_FIELDS) {
+        if (f.target === "source") values[f.key] = mod[f.name];
+        else if (f.cfgKey === "thresholds") values[f.key] = cfg.thresholds;
+        else if (f.cfgKey === "intervalSeconds") values[f.key] = cfg.intervalMs / 1000;
+      }
+      return sendJson(res, 200, { fields: SETTINGS_FIELDS, values });
+    }
+
+    // 設定を反映
+    if (req.method === "POST" && pathname === "/api/settings/apply") {
+      const body = await readBody(req);
+      const result = applySettings(body.values || {});
       return sendJson(res, 200, { ok: true, ...result });
     }
 
