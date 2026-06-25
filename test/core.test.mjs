@@ -13,7 +13,7 @@ import {
   pickSpeech,
   composeScreen, ART_H, BUBBLE_H, STAGES,
   PRICING, formatCost, rippleLevel, RIPPLE_RAMP, DATA_INTERVAL_MS, rippleLifetimeMs, RIPPLE_DURATION_MS, RIPPLE_SPEED,
-  formatTokensShort, topLineColors, SLEEP_AFTER_MS, formatCountdown,
+  formatTokensShort, topLineColors, SLEEP_AFTER_MS, formatCountdown, stageArtWidth,
   maxContentWidth, MIN_COLS, MIN_ROWS, maxContentHeight, SPEECH_POOLS, fitLines, zzzLines, breathArt,
   dayKey, midnightMs, resolveConfig, mergeLiteLLMPricing, TEXTS,
   parseMouseEvents, heartLines, PET_DURATION_MS,
@@ -703,4 +703,21 @@ test("rippleLifetimeMs: 発生時間 + 端まで抜ける時間", () => {
   assert.equal(rippleLifetimeMs(0), RIPPLE_DURATION_MS);
   assert.equal(rippleLifetimeMs(60), RIPPLE_DURATION_MS + 60 / RIPPLE_SPEED);
   assert.ok(rippleLifetimeMs(73) > RIPPLE_DURATION_MS); // 画面端ぶん長い
+});
+
+test("stageArtWidth: 全フレーム共通の最大幅。frame0/frame1 で composeScreen の体の左位置が揃う", () => {
+  const left = (l) => l.length - l.trimStart().length;
+  for (const st of STAGES) {
+    const w = stageArtWidth(st);
+    // frame0(しっぽ有)と frame1 で、artWidth を渡せば各アート行の左位置が一致する
+    const a = composeScreen({ artLines: st.frames[0], bubbleText: "x", artWidth: w, stageIndex: 0, stageName: "x", total: 0, progress: 0, ceil: 1, pace: null, cost: 0, nextScanInMs: 0 });
+    const b = composeScreen({ artLines: st.frames[1], bubbleText: "x", artWidth: w, stageIndex: 0, stageName: "x", total: 0, progress: 0, ceil: 1, pace: null, cost: 0, nextScanInMs: 0 });
+    // アート領域（下から art.length 行）の各行の左インデントが一致
+    const n = st.frames[0].length;
+    for (let i = 0; i < n; i++) {
+      const ra = a[BUBBLE_H + ART_H - n + i];
+      const rb = b[BUBBLE_H + ART_H - n + i];
+      if (ra.trim() && rb.trim()) assert.equal(left(ra), left(rb), `${st.name} 行${i} の左位置がずれる`);
+    }
+  }
 });

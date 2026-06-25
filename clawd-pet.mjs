@@ -587,6 +587,16 @@ export function breathArt(stage) {
   return out;
 }
 
+// ステージが取りうる全フレーム（通常2枚・まばたき・呼吸）の最大表示幅。
+// 中央寄せをこの幅で固定すると、しっぽ等でフレーム幅が変わってもペットがぶれない。
+export function stageArtWidth(stage) {
+  let w = 0;
+  for (const f of stage.frames) for (const l of f) w = Math.max(w, strWidth(l));
+  for (const l of stage.blink) w = Math.max(w, strWidth(l));
+  for (const l of breathArt(stage)) w = Math.max(w, strWidth(l));
+  return w;
+}
+
 const ZZZ_FRAMES = [
   ["", "", "z"],
   ["", "  Z", "z"],
@@ -617,7 +627,8 @@ export function composeScreen(view) {
     : null;
   const zzz = overlay != null;
   const bubble = overlay ?? makeBubble(view.bubbleText);
-  const artW = Math.max(...art.map(strWidth));
+  // artWidth が来ればそれで左位置を固定（フレーム間で体がぶれないように）
+  const artW = view.artWidth ?? Math.max(...art.map(strWidth));
   const artLeft = Math.max(0, AXIS_COL - Math.floor(artW / 2));
   const pad = ART_H - art.length; // アートは下揃え、吹き出しはその頭のすぐ上
   for (let i = 0; i < BUBBLE_H + ART_H; i++) {
@@ -989,7 +1000,7 @@ function once(cfg = resolveConfig(process.env, loadConfigFile())) {
 // 合成済みブロックを端末の縦横中央に色付き描画する（runLoop と --preview で共用）。
 // footer があれば最下部に固定。ripple を渡すと波紋エフェクトで描く
 function paintCentered(out, lines, art, opts) {
-  const { cols, rows, palette, crownRows = 0, ripple = null, body, footer = [] } = opts;
+  const { cols, rows, palette, crownRows = 0, ripple = null, body, footer = [], artWidth = null } = opts;
   // 詰めるのは成長余白（アートが低いぶんの上部空行）だけ。吹き出し領域の3行は保つ
   const maxTrim = ART_H - art.length;
   let lead = 0;
@@ -1004,6 +1015,10 @@ function paintCentered(out, lines, art, opts) {
     R = Math.max(R, strWidth(l));
   }
   if (!Number.isFinite(L)) L = 0;
+  // アートの右端をステージ共通の最大幅で固定し、フレーム差で leftPad がぶれないようにする
+  if (artWidth != null) {
+    R = Math.max(R, Math.max(0, AXIS_COL - Math.floor(artWidth / 2)) + artWidth);
+  }
   const leftPad = Math.max(0, Math.floor((cols - L - R) / 2));
   const topPad = Math.max(0, Math.floor((rows - 1 - footer.length - fitted.length) / 2));
 
@@ -1162,8 +1177,9 @@ function runLoop(opts = {}) {
 
     const cols = out.columns || 80;
     const rows = out.rows || 24;
+    const artWidth = stageArtWidth(stage);
     const lines = composeScreen({
-      artLines: art, bubbleText: speech, stageIndex: s.index, stageName,
+      artLines: art, bubbleText: speech, stageIndex: s.index, stageName, artWidth,
       total, progress: s.progress, ceil: s.ceil, floor: s.floor, pace,
       cost: collector.todayCost(), nextScanInMs: nextScanAt - now, lang: cfg.language,
       zzzPhase: asleep ? Math.floor(now / 1000) % 3 : null,
@@ -1175,7 +1191,7 @@ function runLoop(opts = {}) {
       return;
     }
     paintCentered(out, lines, art, {
-      cols, rows, palette, crownRows: stage.crownRows ?? 0,
+      cols, rows, palette, crownRows: stage.crownRows ?? 0, artWidth,
       ripple: rippleActive ? { start: rippleStart, now } : null,
       body: asleep ? palette.sleepBody : palette.body,
     });
@@ -1194,6 +1210,8 @@ function runLoop(opts = {}) {
   };
   scheduleScan();
   setInterval(renderTick, RENDER_INTERVAL_MS);
+  // リサイズ時は全消去して即再描画（残像で中央寄せがずれるのを防ぐ）
+  out.on("resize", () => { out.write("\x1b[2J"); renderTick(); });
 }
 
 // 対話式プレビュー: 矢印でステージ(←→)と状態(↑↓)を切り替えて、本番と同じ色・
@@ -1250,14 +1268,15 @@ function interactivePreview(cfg) {
       out.write("\x1b[H\x1b[2J" + T.widen(MIN_COLS, MIN_ROWS + footer.length, cols, rows) + "\n");
       return;
     }
+    const artWidth = stageArtWidth(stageObj);
     const lines = composeScreen({
-      artLines: spec.art, bubbleText: speech, stageIndex: stage, stageName: T.stageNames[stage],
+      artLines: spec.art, bubbleText: speech, stageIndex: stage, stageName: T.stageNames[stage], artWidth,
       total: spec.total, progress: spec.progress, ceil: spec.ceil, floor: spec.floor,
       pace: 4_200_000, cost: spec.total / 1e6 * 1.9, nextScanInMs: 120_000, lang: cfg.language,
       zzzPhase: spec.zzzPhase, heartPhase: spec.heartPhase,
     });
     paintCentered(out, lines, spec.art, {
-      cols, rows, palette, crownRows: stageObj.crownRows ?? 0,
+      cols, rows, palette, crownRows: stageObj.crownRows ?? 0, artWidth,
       ripple: spec.rippleActive ? { start: rippleStart, now } : null,
       body: spec.sleepBody ? palette.sleepBody : palette.body,
       footer,
@@ -1289,6 +1308,8 @@ function interactivePreview(cfg) {
 
   render();
   setInterval(render, 80);
+  // リサイズ時は全消去して即再描画
+  out.on("resize", () => { out.write("\x1b[2J"); render(); });
 }
 
 const HELP_TEXTS = {
