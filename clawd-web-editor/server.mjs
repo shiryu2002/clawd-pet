@@ -27,7 +27,13 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PET_PATH = process.env.CLAWD_PET_FILE || path.join(HERE, "..", "clawd-pet.mjs");
 const DESIGNS_DIR = process.env.CLAWD_DESIGNS_DIR || path.join(HERE, "designs");
 const PORT = Number(process.env.PORT || 4173);
-const HOST = process.env.HOST || "127.0.0.1";
+// 既定は loopback（127.0.0.1）で安全側。ただし WSL は localhost 転送が効かず
+// Windows のブラウザから届かないので、WSL のときだけ 0.0.0.0 で待つ
+// （WSL2 NAT では VM の IP は Windows ホストからしか届かず LAN には出ない）。
+// 明示的に絞る/広げるなら HOST 環境変数で上書きする。
+const IS_WSL = /microsoft/i.test(os.release());
+const HOST = process.env.HOST || (IS_WSL ? "0.0.0.0" : "127.0.0.1");
+const URL_HOST = HOST === "0.0.0.0" ? "127.0.0.1" : HOST; // 表示・アクセス用
 
 fs.mkdirSync(DESIGNS_DIR, { recursive: true });
 
@@ -90,7 +96,23 @@ function writeSourceChecked(next) {
   const backup = `${PET_PATH}.bak-${stamp}`;
   fs.copyFileSync(PET_PATH, backup);
   fs.writeFileSync(PET_PATH, next);
+  pruneBackups();
   return { backup: path.basename(backup) };
+}
+
+export const BACKUP_KEEP = 5; // 最新いくつのバックアップを残すか
+// ファイル名一覧から、消すべき古いバックアップ（新しい順に keep 個を超える分）を返す純粋関数
+export function backupsToDelete(filenames, base, keep = BACKUP_KEEP) {
+  const baks = filenames.filter((f) => f.startsWith(base)).sort(); // 名前=ISO時刻なので辞書順=時系列順
+  return keep > 0 ? baks.slice(0, -keep) : baks;
+}
+// PET_PATH.bak-* を新しい順に BACKUP_KEEP 個だけ残し、古いものは消す
+function pruneBackups() {
+  try {
+    const dir = path.dirname(PET_PATH);
+    const base = path.basename(PET_PATH) + ".bak-";
+    for (const f of backupsToDelete(fs.readdirSync(dir), base)) fs.rmSync(path.join(dir, f), { force: true });
+  } catch { /* 掃除失敗は無視 */ }
 }
 
 function applyToSource(stages) {
@@ -242,8 +264,24 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`clawd-web-editor: http://${HOST}:${PORT}  (Ctrl+C で終了)`);
-  console.log(`  保存先: ${DESIGNS_DIR}`);
-  console.log(`  適用先: ${PET_PATH}`);
-});
+// listen は start() で明示的に。import しただけ（test など）では bind しない。
+export function start() {
+  // ポート衝突などを生スタックで落とさず、分かる形で終わる
+  server.on("error", (e) => {
+    if (e.code === "EADDRINUSE") {
+      console.error(`clawd-web-editor: ポート ${PORT} は使用中。別インスタンスが起動済みかも → http://${URL_HOST}:${PORT}`);
+    } else {
+      console.error(`clawd-web-editor: 起動に失敗 — ${e.message}`);
+    }
+    process.exit(1);
+  });
+  server.listen(PORT, HOST, () => {
+    console.log(`clawd-web-editor: http://${URL_HOST}:${PORT}  (Ctrl+C で終了)`);
+    console.log(`  保存先: ${DESIGNS_DIR}`);
+    console.log(`  適用先: ${PET_PATH}`);
+  });
+  return server;
+}
+
+// 直接 `node server.mjs` で起動されたときは即 listen
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) start();
