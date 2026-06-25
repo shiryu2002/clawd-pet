@@ -7,7 +7,7 @@
     "clawd-pet": "./clawd-pet.mjs"
   },
   "scripts": {
-    "test": "node --test test/ clawd-web-editor/",
+    "test": "node --test test/*.test.mjs clawd-web-editor/*.test.mjs",
     "start": "node clawd-pet.mjs",
     "editor": "node clawd-web-editor/server.mjs"
   },
