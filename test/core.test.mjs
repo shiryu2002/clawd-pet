@@ -16,6 +16,7 @@ import {
   formatTokensShort, topLineColors, SLEEP_AFTER_MS, formatCountdown, stageArtWidth,
   maxContentWidth, MIN_COLS, MIN_ROWS, maxContentHeight, SPEECH_POOLS, fitLines, zzzLines, breathArt,
   dayKey, midnightMs, resolveConfig, mergeLiteLLMPricing, TEXTS,
+  refreshPricing, PRICING_TTL_MS, nodeVersionError, MIN_NODE_MAJOR,
   parseMouseEvents, heartLines, PET_DURATION_MS,
   previewSpec, PREVIEW_STATES, browserCommand,
 } from "../clawd-pet.mjs";
@@ -720,4 +721,49 @@ test("stageArtWidth: 全フレーム共通の最大幅。frame0/frame1 で compo
       if (ra.trim() && rb.trim()) assert.equal(left(ra), left(rb), `${st.name} 行${i} の左位置がずれる`);
     }
   }
+});
+
+test("refreshPricing: TTL内のキャッシュは fetch せず使う（ネット不要）", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-price-"));
+  const cacheFile = path.join(dir, "pricing-cache.json");
+  const NOW = Date.parse("2026-06-25T00:00:00Z");
+  // 取得済み（1日前）→ TTL内
+  fs.writeFileSync(cacheFile, JSON.stringify({
+    fetchedAt: new Date(NOW - 24 * 3600e3).toISOString(),
+    pricing: { "claude-cache-test": { input: 9, output: 9, cacheWrite5m: 9, cacheWrite1h: 9, cacheRead: 9 } },
+  }));
+  const r = await refreshPricing({ cacheFile, now: () => NOW });
+  assert.equal(r, "cache-fresh");
+  // キャッシュの料金が反映される（custom モデルが parseUsageLine のコストに効く）
+  const line = JSON.stringify({ timestamp: "2026-06-25T00:00:00Z", requestId: "r", message: { id: "m", model: "claude-cache-test", usage: { input_tokens: 1e6, output_tokens: 0 } } });
+  assert.equal(parseUsageLine(line).cost, 9); // input 1M × $9/1M
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("refreshPricing: TTL切れ＋NO_FETCH はキャッシュにフォールバック", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-price-"));
+  const cacheFile = path.join(dir, "pricing-cache.json");
+  const NOW = Date.parse("2026-06-25T00:00:00Z");
+  fs.writeFileSync(cacheFile, JSON.stringify({
+    fetchedAt: new Date(NOW - 10 * 24 * 3600e3).toISOString(), // 10日前→TTL切れ
+    pricing: { "claude-cache-test2": { input: 7, output: 7, cacheWrite5m: 7, cacheWrite1h: 7, cacheRead: 7 } },
+  }));
+  process.env.CLAWD_PET_NO_FETCH = "1";
+  const r = await refreshPricing({ cacheFile, now: () => NOW });
+  delete process.env.CLAWD_PET_NO_FETCH;
+  assert.equal(r, "cache");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("PRICING_TTL_MS: 1週間", () => {
+  assert.equal(PRICING_TTL_MS, 7 * 24 * 3600e3);
+});
+
+test("nodeVersionError: 要件未満なら案内、満たせば null", () => {
+  assert.ok(nodeVersionError("v18.19.0"));            // 18 < 20 → エラー文
+  assert.ok(nodeVersionError("v18.19.0").includes("20"));
+  assert.equal(nodeVersionError("v20.0.0"), null);    // ちょうど 20 → OK
+  assert.equal(nodeVersionError("v22.5.1"), null);    // 新しい → OK
+  assert.equal(nodeVersionError("garbage"), null);    // 解析不能なら通す（誤検知で止めない）
+  assert.equal(MIN_NODE_MAJOR, 20);
 });

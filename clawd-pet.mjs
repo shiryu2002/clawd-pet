@@ -7,6 +7,18 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import readline from "node:readline/promises";
 import { spawn } from "node:child_process";
 
+export const MIN_NODE_MAJOR = 20; // package.json の engines と揃える
+
+// `process.version`（"v20.11.0" 等）のメジャー番号が要件を満たすか。満たさなければ
+// 案内文（string）を返す。満たせば null。
+export function nodeVersionError(version, min = MIN_NODE_MAJOR) {
+  const major = parseInt(String(version).replace(/^v/, ""), 10);
+  if (Number.isFinite(major) && major < min) {
+    return `clawd-pet は Node.js ${min} 以上が必要です（今: ${version}）。新しい Node に切り替えてください。`;
+  }
+  return null;
+}
+
 export const JST_OFFSET_MS = 9 * 3600e3;
 export const THRESHOLDS = [0, 2_000_000, 10_000_000, 30_000_000, 80_000_000, 200_000_000];
 export const DATA_INTERVAL_MS = 3 * 60e3;
@@ -140,9 +152,31 @@ export function mergeLiteLLMPricing(base, raw) {
 
 const PRICING_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 
-// 起動時に料金表を更新する。ネットワーク不可ならキャッシュ → 内蔵テーブルの順でフォールバック
-export async function refreshPricing({ cacheFile, timeoutMs = 4000 } = {}) {
-  if (process.env.CLAWD_PET_NO_FETCH) return "disabled";
+export const PRICING_TTL_MS = 7 * 24 * 3600e3; // 料金表キャッシュの有効期間（1週間）
+
+// キャッシュを読む。{ at: 取得時刻ms, pricing } か null
+function readPricingCache(cacheFile) {
+  if (!cacheFile) return null;
+  try {
+    const c = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+    if (!c?.pricing) return null;
+    return { at: Date.parse(c.fetchedAt) || 0, pricing: c.pricing };
+  } catch { return null; }
+}
+
+// 起動時に料金表を更新する。キャッシュが新しければ fetch せず使う。
+// 取得不可ならキャッシュ → 内蔵テーブルの順でフォールバック。
+export async function refreshPricing({ cacheFile, timeoutMs = 4000, now = Date.now, ttlMs = PRICING_TTL_MS } = {}) {
+  const cached = readPricingCache(cacheFile);
+  // TTL 内のキャッシュがあれば、毎起動ネットワークに当てない
+  if (cached && now() - cached.at < ttlMs) {
+    activePricing = { ...PRICING, ...cached.pricing };
+    return "cache-fresh";
+  }
+  if (process.env.CLAWD_PET_NO_FETCH) {
+    if (cached) { activePricing = { ...PRICING, ...cached.pricing }; return "cache"; }
+    return "disabled";
+  }
   try {
     const res = await fetch(PRICING_URL, { signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -151,20 +185,12 @@ export async function refreshPricing({ cacheFile, timeoutMs = 4000 } = {}) {
     if (cacheFile) {
       try {
         fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
-        fs.writeFileSync(cacheFile, JSON.stringify({ fetchedAt: new Date().toISOString(), pricing: activePricing }));
+        fs.writeFileSync(cacheFile, JSON.stringify({ fetchedAt: new Date(now()).toISOString(), pricing: activePricing }));
       } catch { /* キャッシュ書き込み失敗は無視 */ }
     }
     return "fetched";
   } catch {
-    if (cacheFile) {
-      try {
-        const cached = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
-        if (cached?.pricing) {
-          activePricing = { ...PRICING, ...cached.pricing };
-          return "cache";
-        }
-      } catch { /* キャッシュなし */ }
-    }
+    if (cached) { activePricing = { ...PRICING, ...cached.pricing }; return "cache"; }
     return "builtin";
   }
 }
@@ -1363,6 +1389,16 @@ function openBrowser(url) {
   } catch { /* 開けなくても URL は表示するので問題ない */ }
 }
 
+// Windows から WSL のサーバへ届くアドレス（eth0 の IPv4）。localhost 転送が
+// 効かない環境向け。見つからなければ null。
+export function wslHostIP() {
+  const ifs = os.networkInterfaces();
+  for (const name of ["eth0", ...Object.keys(ifs)]) {
+    for (const i of ifs[name] || []) if (i.family === "IPv4" && !i.internal) return i.address;
+  }
+  return null;
+}
+
 // --edit: 同梱の Web ドット絵エディタを起動してブラウザで開く
 async function launchEditor() {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -1371,19 +1407,29 @@ async function launchEditor() {
     console.log(`clawd-web-editor が見つからないわ: ${serverPath}`);
     process.exit(1);
   }
-  const url = `http://${process.env.HOST || "127.0.0.1"}:${process.env.PORT || 4173}`;
-  // すでに起動中なら二重起動（ポート衝突でクラッシュ）を避け、そのまま開く
-  let running = false;
+  const port = process.env.PORT || 4173;
+  const probeUrl = `http://127.0.0.1:${port}`; // 存在確認は WSL 内の loopback で
+  // ブラウザ用は、WSL かつ HOST 未指定なら WSL の IP（localhost 転送が効かない環境向け）
+  const isWsl = /microsoft/i.test(os.release());
+  const ip = !process.env.HOST && isWsl ? wslHostIP() : null;
+  const browseUrl = `http://${process.env.HOST || ip || "127.0.0.1"}:${port}`;
+  // ポートの状態を見極める: 接続拒否＝空き（起動してよい）、それ以外＝何か居る（bindしない）
+  let probe;
   try {
-    const res = await fetch(url + "/api/stages", { signal: AbortSignal.timeout(800) });
-    running = res.ok;
-  } catch { running = false; }
-  if (running) {
-    console.log(`すでに起動しているエディタを開くわ: ${url}`);
-  } else {
-    await import(pathToFileURL(serverPath).href); // 読み込むと listen まで走る
+    const res = await fetch(probeUrl + "/api/stages", { signal: AbortSignal.timeout(1500) });
+    probe = res.ok ? "ours" : "other";
+  } catch (e) {
+    probe = (e?.cause?.code || e?.code) === "ECONNREFUSED" ? "free" : "other";
   }
-  openBrowser(url);
+  if (probe === "other") {
+    console.log(`ポート ${port} が塞がっているわ。残ったプロセスがいるかも。`);
+    console.log(`  解放するなら: pkill -f clawd-web-editor`);
+  } else if (probe === "free") {
+    const mod = await import(pathToFileURL(serverPath).href);
+    mod.start(); // 空きのときだけ listen
+  }
+  console.log(`ブラウザで開いてね: ${browseUrl}`);
+  openBrowser(browseUrl);
 }
 
 const KNOWN_FLAGS = new Set(["--once", "--preview", "--edit", "--help"]);
@@ -1411,4 +1457,8 @@ async function main() {
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (isMain) main();
+if (isMain) {
+  const verr = nodeVersionError(process.version);
+  if (verr) { console.error(verr); process.exit(1); }
+  main();
+}

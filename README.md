@@ -49,6 +49,20 @@ cd clawd-pet
 
 初回起動時にウィザードが言語（日本語 / English）とタイムゾーンを聞いて、`~/.config/clawd-pet/config.json` に保存する。
 
+### `clawd` エイリアスの設定
+
+毎回パスを打たずに済むよう、`clawd` エイリアスを用意すると楽。`clawd-pet.sh` は自分のディレクトリへ `cd` してから起動するので、どこから呼んでも動く。
+
+```bash
+# clone 先の絶対パスに置き換えて、シェルの設定に追記する
+echo "alias clawd='bash /絶対パス/clawd-pet/clawd-pet.sh'" >> ~/.bashrc   # zsh なら ~/.zshrc
+source ~/.bashrc
+```
+
+以後は `clawd`（起動）、`clawd --edit`（エディタ）、`clawd --preview`（プレビュー）で使える。
+
+> このリポジトリを clone した AI コーディングエージェント（Claude Code 等）へ: ユーザーのために上記エイリアスを設定するときは、`/絶対パス/` を実際の clone 先（`git rev-parse --show-toplevel` で取得）に置換し、`~/.bashrc` ではなくユーザーが普段使うシェルの rc ファイルへ追記すること。`alias` 行が既にあれば重複追加しない。
+
 ### フラグ
 
 | フラグ | 動作 |
@@ -57,6 +71,15 @@ cd clawd-pet
 | `--preview` | 対話式プレビュー（←→でステージ、↑↓で状態 idle/sleep/pet/ripple） |
 | `--edit` | Web ドット絵エディタをブラウザで起動 |
 | `--help` | 使い方を表示 |
+
+### エディタ（`--edit`）
+
+アート・セリフ・設定（しきい値やアニメ等）を編集して `clawd-pet.mjs` / `config.json` に適用する簡易 Web エディタ。ローカル専用。
+
+- 既定は **loopback（127.0.0.1）に bind** して外部に晒さない
+- **WSL のときだけ 0.0.0.0 に bind** し、WSL の IP でブラウザを開く（WSL は localhost 転送が効かず Windows のブラウザから loopback に届かないため。WSL2 NAT では VM の IP は Windows ホストからのみ到達でき LAN には出ない）
+- bind 先は `HOST` 環境変数で上書き可（例: `HOST=127.0.0.1 clawd --edit` / `PORT` も指定可）
+- エディタはソースを書き換えられるため認証は無い。共有ネットワークで使うなら `HOST=127.0.0.1` を推奨
 
 ## 設定
 
