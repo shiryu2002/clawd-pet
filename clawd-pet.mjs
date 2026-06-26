@@ -964,29 +964,74 @@ function loadConfigFile() {
 }
 
 // 初回起動: 言語とタイムゾーンを聞いて設定ファイルに保存する
+// ↑↓ で選んで Enter で決定するメニュー。選んだ index を返す。
+// 非 TTY なら既定 index をそのまま返す。Ctrl+C は既定で確定。
+function selectMenu(title, options, def = 0) {
+  const stdin = process.stdin, out = process.stdout;
+  if (!stdin.isTTY || !stdin.setRawMode) return Promise.resolve(def);
+  return new Promise((resolve) => {
+    let cur = def;
+    const draw = (first) => {
+      if (!first) out.write(`\x1b[${options.length}A`); // 行数ぶん上へ戻って描き直す
+      for (let i = 0; i < options.length; i++) {
+        const on = i === cur;
+        out.write(`\r\x1b[K  ${on ? "▸ \x1b[36m" : "  "}${options[i]}\x1b[0m\n`);
+      }
+    };
+    out.write(title + "\n");
+    draw(true);
+    stdin.setRawMode(true); stdin.resume(); stdin.setEncoding("utf8");
+    const done = (val) => { stdin.off("data", onData); stdin.setRawMode(false); stdin.pause(); resolve(val); };
+    const onData = (d) => {
+      if (d.includes("\x03")) return done(def); // Ctrl+C
+      // 1チャンクに複数キーが来ても取りこぼさない
+      for (const k of d.match(/\x1b\[[AB]|\x1bO[AB]|[\r\nkj]/g) || []) {
+        if (k === "\x1b[A" || k === "\x1bOA" || k === "k") cur = (cur - 1 + options.length) % options.length;
+        else if (k === "\x1b[B" || k === "\x1bOB" || k === "j") cur = (cur + 1) % options.length;
+        else return done(cur); // \r or \n
+      }
+      draw();
+    };
+    stdin.on("data", onData);
+  });
+}
+
+// タイムゾーン候補（先頭＝既定の Asia/Tokyo）。最後は手入力。
+const TZ_CHOICES = [
+  "Asia/Tokyo", "UTC", "America/New_York", "America/Los_Angeles",
+  "Europe/London", "Europe/Paris", "Asia/Shanghai", "Australia/Sydney",
+];
+
 async function firstRunWizard() {
-  const sysTz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  // EOF や中断は「既定値で続行」扱いにする
-  const ask = async (q) => { try { return (await rl.question(q)).trim(); } catch { return ""; } };
-  let language, timezone;
-  try {
-    const langIn = await ask("Language / 言語:  1) 日本語  2) English  [1]: ");
-    language = langIn === "2" ? "en" : "ja";
-    const tzIn = await ask(`Timezone (IANA) [${sysTz}]: `);
-    timezone = tzIn || sysTz;
-    try { dayKey(Date.now(), timezone); } catch {
-      console.log(`  unknown timezone "${timezone}" — using ${sysTz}`);
-      timezone = sysTz;
-    }
-  } finally {
-    rl.close();
+  console.log("clawd-pet をはじめるよ / Let's set up clawd-pet");
+  console.log("（↑↓ で選んで Enter で決定 / use ↑↓ then Enter）\n");
+
+  const li = await selectMenu("言語 / language", ["日本語", "English"], 0);
+  const language = li === 1 ? "en" : "ja";
+
+  const tzLabel = language === "ja" ? "タイムゾーン" : "Timezone";
+  const other = language === "ja" ? "その他（手入力）" : "Other (type it)";
+  const ti = await selectMenu(`\n${tzLabel}`, [...TZ_CHOICES, other], 0);
+  let timezone = TZ_CHOICES[ti];
+  if (timezone === undefined) { // 「その他」を選んだ → IANA 名を手入力
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      const q = language === "ja" ? "IANA 名（例: Asia/Seoul）: " : "IANA name (e.g. Asia/Seoul): ";
+      timezone = (await rl.question(q).catch(() => "")).trim() || "Asia/Tokyo";
+    } finally { rl.close(); }
   }
+  try { dayKey(Date.now(), timezone); } catch {
+    console.log(language === "ja" ? `  「${timezone}」は不明。Asia/Tokyo を使うわ` : `  unknown "${timezone}" — using Asia/Tokyo`);
+    timezone = "Asia/Tokyo";
+  }
+
   const cfg = { language, timezone, thresholds: THRESHOLDS, intervalSeconds: DATA_INTERVAL_MS / 1000 };
   fs.mkdirSync(configDir(), { recursive: true });
   const file = path.join(configDir(), "config.json");
   fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
-  console.log(`  saved: ${file}`);
+  console.log(language === "ja"
+    ? `\n  ${language} / ${timezone} で保存したよ: ${file}\n  あとで ${path.basename(file)} を直接編集してもOK。\n`
+    : `\n  saved (${language} / ${timezone}): ${file}\n  you can edit ${path.basename(file)} later.\n`);
   return cfg;
 }
 
